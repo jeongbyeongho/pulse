@@ -126,17 +126,34 @@ async function handleGetTrends(url, env, corsHeaders) {
   const limit = parseInt(url.searchParams.get('limit') || '20');
   const offset = parseInt(url.searchParams.get('offset') || '0');
   const category = url.searchParams.get('category') || '';
+  const sort = (url.searchParams.get('sort') || 'latest').toLowerCase();
+  const period = (url.searchParams.get('period') || '').toLowerCase();
 
   let query = `id,korean_title,summary_kr,importance,tickers,category,link,source,created_at,view_count`;
   let filters = '';
+  let order = 'created_at.desc,importance.desc';
   
   if (category) {
     filters = `&category=eq.${encodeURIComponent(category)}`;
   }
 
+  if (period && ['1h', '6h', '24h', '7d'].includes(period)) {
+    const hours = period === '1h' ? 1 : period === '6h' ? 6 : period === '7d' ? 168 : 24;
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    filters += `&created_at=gte.${encodeURIComponent(cutoff)}`;
+  }
+
+  if (sort === 'featured') {
+    order = 'importance.desc,created_at.desc';
+  } else if (sort === 'popular') {
+    order = 'view_count.desc,importance.desc,created_at.desc';
+  } else {
+    order = 'created_at.desc,importance.desc';
+  }
+
   const { data, error } = await querySupabase(
     env, 
-    `trends?select=${query}${filters}&order=created_at.desc,importance.desc&limit=${limit}&offset=${offset}`
+    `trends?select=${query}${filters}&order=${order}&limit=${limit}&offset=${offset}`
   );
 
   if (error) throw new Error(error.message || 'Failed to fetch trends');
@@ -146,6 +163,8 @@ async function handleGetTrends(url, env, corsHeaders) {
     count: data.length,
     offset,
     category,
+    sort,
+    period,
     has_more: data.length === limit,
     data: data.map(row => ({
       ...row,

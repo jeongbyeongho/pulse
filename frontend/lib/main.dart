@@ -1,7 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'screens/landing_screen.dart';
-import 'screens/home_screen.dart';
 
 void main() {
   runApp(const MyApp());

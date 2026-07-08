@@ -5,6 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:syncfusion_flutter_gauges/gauges.dart';
 
 import '../services/api_service.dart';
+import '../widgets/app_drawer.dart';
+import 'home_screen.dart';
+import 'landing_screen.dart';
+import 'market_page.dart';
 
 class FearGreedPage extends StatefulWidget {
   const FearGreedPage({super.key});
@@ -68,7 +72,20 @@ class _FearGreedPageState extends State<FearGreedPage> {
       length: 2,
       child: Scaffold(
         backgroundColor: const Color(0xFFF6F8FB),
+        drawer: AppDrawer(
+          currentSection: DrawerSection.fearGreed,
+          homeBuilder: (context) => LandingScreen(),
+          newsBuilder: (context) => HomeScreen(),
+          fearGreedBuilder: (context) => FearGreedPage(),
+          marketBuilder: (context) => MarketPage(),
+        ),
         appBar: AppBar(
+          leading: Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.menu_rounded),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
+          ),
           title: const Text(
             '공포탐욕지수',
             style: TextStyle(

@@ -1,12 +1,36 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import '../models/trend_insight.dart';
 import '../models/trend_item.dart';
 import '../services/api_service.dart';
+import '../utils/news_grouping.dart';
 import 'home_screen.dart';
 import 'fear_greed_page.dart';
 import 'market_page.dart';
+
+String _landingTimeLabel() {
+  final now = DateTime.now();
+  final hour = now.hour.toString().padLeft(2, '0');
+  final minute = now.minute.toString().padLeft(2, '0');
+  return '$hour:$minute';
+}
+
+String _landingCompactTime(String value) {
+  final parsed = DateTime.tryParse(value.trim());
+  if (parsed == null) return _landingTimeLabel();
+  final diff = DateTime.now().difference(parsed);
+  if (!diff.isNegative) {
+    if (diff.inMinutes < 1) return '방금 전';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}분 전';
+    if (diff.inHours < 24) return '${diff.inHours}시간 전';
+  }
+  final month = parsed.month.toString().padLeft(2, '0');
+  final day = parsed.day.toString().padLeft(2, '0');
+  final hour = parsed.hour.toString().padLeft(2, '0');
+  final minute = parsed.minute.toString().padLeft(2, '0');
+  return '$month.$day $hour:$minute';
+}
 
 class LandingScreen extends StatefulWidget {
   const LandingScreen({super.key});
@@ -20,11 +44,15 @@ class _LandingScreenState extends State<LandingScreen> {
   final ApiService _api = ApiService();
   final TextEditingController _searchController = TextEditingController();
   late Future<TrendInsightSnapshot> _insightFuture;
+  late Future<List<IssueTimelineItem>> _timelineFuture;
+  late Future<List<TrendItem>> _latestNewsFuture;
 
   @override
   void initState() {
     super.initState();
     _insightFuture = _api.fetchTrendInsights();
+    _timelineFuture = _api.fetchTrendTimeline(period: '24h', limit: 3, minScore: 45);
+    _latestNewsFuture = _api.fetchTrends(limit: 12, sort: 'latest', period: '24h');
   }
 
   @override
@@ -72,16 +100,20 @@ class _LandingScreenState extends State<LandingScreen> {
                 _FadeInOnScroll(
                   child: _buildPlatformHero(isMobile),
                 ),
-                const SizedBox(height: 120),
                 _FadeInOnScroll(
-                  delay: 200,
-                  child: _buildCoreFeatures(isMobile),
+                  delay: 120,
+                  child: _buildIssueTimelineSection(),
                 ),
-                const SizedBox(height: 120),
                 _FadeInOnScroll(
-                  child: _buildCategoriesSection(isMobile),
+                  delay: 180,
+                  child: _buildLatestNewsSection(),
                 ),
-                const SizedBox(height: 120),
+                const SizedBox(height: 40),
+                _FadeInOnScroll(
+                  delay: 240,
+                  child: _buildMarketLinksSection(),
+                ),
+                const SizedBox(height: 70),
                 _FadeInOnScroll(
                   child: _buildFooter(),
                 ),
@@ -94,100 +126,149 @@ class _LandingScreenState extends State<LandingScreen> {
   }
 
   Widget _buildAppBar(bool isMobile) {
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: isMobile ? 20 : 60,
-        vertical: 20,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.9),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+    return FutureBuilder<TrendInsightSnapshot>(
+      future: _insightFuture,
+      builder: (context, snapshot) {
+        final insight = snapshot.data;
+        final analyzedCount = insight?.sentiment.count ?? 0;
+        final sectorMood = insight == null
+            ? '분석 대기'
+            : _landingSectorMoodLabel(insight);
+
+        return Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 20 : 60,
+            vertical: 20,
           ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.asset(
-                    'assets/icon/app_icon.png',
-                    width: 36,
-                    height: 36,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Text(
-                'Pulse',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
-                  letterSpacing: -0.5,
-                ),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.9),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
               ),
             ],
           ),
-          const Spacer(),
-          if (!isMobile) ...[
-            _navItem(
-              '실시간뉴스',
-              () => _openPage(const HomeScreen()),
-            ),
-            const SizedBox(width: 40),
-            _navItem(
-              '공포탐욕지수',
-              () => _openPage(const FearGreedPage()),
-            ),
-            const SizedBox(width: 40),
-            _navItem(
-              '증시',
-              () => _openPage(const MarketPage()),
-            ),
-            const SizedBox(width: 40),
-            _HoverButton(
-              onTap: () {
-                _openPage(const HomeScreen());
-              },
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'Get Started',
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.black87),
-                ),
+          child: Row(
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.asset(
+                        'assets/icon/app_icon.png',
+                        width: 36,
+                        height: 36,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Pulse',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-          if (isMobile)
-            IconButton(
-              icon: const Icon(Icons.menu, color: Colors.black87),
-              onPressed: () {
-                _scaffoldKey.currentState?.openDrawer();
-              },
-            ),
-        ],
-      ),
+              const Spacer(),
+              if (!isMobile) ...[
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF4FF),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0xFFDCE7FF)),
+                  ),
+                  child: snapshot.connectionState == ConnectionState.waiting
+                      ? Text(
+                          '분석 중',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.blue.shade700,
+                            letterSpacing: 0,
+                          ),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF2563EB),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '분석 기사 ${analyzedCount}건',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.blue.shade700,
+                                    letterSpacing: 0,
+                                  ),
+                                ),
+                                const SizedBox(height: 1),
+                                Text(
+                                  '경제·세계 분위기 · $sectorMood',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.blueGrey.shade600,
+                                    letterSpacing: 0,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                ),
+                const SizedBox(width: 24),
+                _navItem(
+                  '실시간뉴스',
+                  () => _openPage(const HomeScreen()),
+                ),
+                const SizedBox(width: 40),
+                _navItem(
+                  '공포탐욕지수',
+                  () => _openPage(const FearGreedPage()),
+                ),
+                const SizedBox(width: 40),
+                _navItem(
+                  '증시',
+                  () => _openPage(const MarketPage()),
+                ),
+              ],
+              if (isMobile)
+                IconButton(
+                  icon: const Icon(Icons.menu, color: Colors.black87),
+                  onPressed: () {
+                    _scaffoldKey.currentState?.openDrawer();
+                  },
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -337,54 +418,144 @@ class _LandingScreenState extends State<LandingScreen> {
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
         final insight = snapshot.data;
 
-        return Container(
-          padding: EdgeInsets.fromLTRB(
-            isMobile ? 20 : 60,
-            isMobile ? 34 : 54,
-            isMobile ? 20 : 60,
-            isMobile ? 42 : 64,
-          ),
-          child: isMobile
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _LandingHeroCopy(isMobile: isMobile),
-                    const SizedBox(height: 24),
-                    _LandingInsightPanelFixed(
-                      isLoading: isLoading,
-                      insight: insight,
-                      searchController: _searchController,
-                      onRefresh: _refreshInsights,
-                      onSearch: _submitLandingSearch,
-                      onStart: () => _openPage(const HomeScreen()),
-                      onKeywordTap: _searchLandingKeyword,
-                      onRisingIssueTap: _searchLandingRisingIssue,
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1020),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                isMobile ? 20 : 20,
+                isMobile ? 20 : 20,
+                isMobile ? 20 : 20,
+                isMobile ? 18 : 20,
+              ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFAFBFC),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFF0F4F8)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF0F172A).withOpacity(0.05),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
                     ),
                   ],
-                )
-              : Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    Expanded(
-                      flex: 9,
-                      child: _LandingHeroCopy(isMobile: isMobile),
-                    ),
-                    const SizedBox(width: 34),
-                    Expanded(
-                      flex: 8,
-                      child: _LandingInsightPanelFixed(
+                ),
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    isMobile ? 20 : 24,
+                    isMobile ? 20 : 24,
+                    isMobile ? 20 : 24,
+                    isMobile ? 20 : 24,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 4,
+                            height: isMobile ? 44 : 48,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2563EB),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 9,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEEF4FF),
+                                        borderRadius:
+                                            BorderRadius.circular(999),
+                                      ),
+                                      child: const Text(
+                                        '오늘의 주요 이슈',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF2563EB),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        '지금 가장 뜨거운 흐름을 빠르게 확인하세요',
+                                        style: TextStyle(
+                                          fontSize: isMobile ? 20 : 22,
+                                          fontWeight: FontWeight.w600,
+                                          color: const Color(0xFF0F172A),
+                                          height: 1.18,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '오늘의 핵심 이슈, 키워드, 최신 뉴스를 한 화면에서 이어서 봅니다.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.blueGrey.shade700,
+                                    height: 1.4,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!isMobile)
+                            Container(
+                              margin: const EdgeInsets.only(left: 12, top: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: const Color(0xFFE2E8F0),
+                                ),
+                              ),
+                              child: Text(
+                                _landingTimeLabel(),
+                                style: TextStyle(
+                                  color: Colors.blueGrey.shade600,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _LandingTrendPanel(
                         isLoading: isLoading,
                         insight: insight,
                         searchController: _searchController,
                         onRefresh: _refreshInsights,
                         onSearch: _submitLandingSearch,
-                        onStart: () => _openPage(const HomeScreen()),
                         onKeywordTap: _searchLandingKeyword,
                         onRisingIssueTap: _searchLandingRisingIssue,
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
+              ),
+            ),
+          ),
         );
       },
     );
@@ -393,7 +564,471 @@ class _LandingScreenState extends State<LandingScreen> {
   void _refreshInsights() {
     setState(() {
       _insightFuture = _api.fetchTrendInsights();
+      _timelineFuture = _api.fetchTrendTimeline(period: '24h', limit: 3, minScore: 45);
+      _latestNewsFuture = _api.fetchTrends(limit: 12, sort: 'latest', period: '24h');
     });
+  }
+
+  Widget _buildIssueTimelineSection() {
+    return FutureBuilder<List<IssueTimelineItem>>(
+      future: _timelineFuture,
+      builder: (context, snapshot) {
+        final loading = snapshot.connectionState == ConnectionState.waiting;
+        final items = snapshot.data ?? const <IssueTimelineItem>[];
+
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1020),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFAFBFC),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE8EEF5)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF0F172A).withOpacity(0.04),
+                      blurRadius: 22,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEEF4FF),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.timeline_rounded,
+                            size: 17,
+                            color: Colors.blue.shade700,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            '실시간 이슈 타임라인',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                        Text(
+                          '중요 이슈만',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.blueGrey.shade500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '시간순으로 묶인 핵심 이슈만 보여줍니다.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blueGrey.shade500,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    if (loading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 28),
+                        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                      )
+                    else if (items.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Text(
+                          '아직 타임라인으로 묶을 만큼 충분한 이슈가 없습니다.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      )
+                    else
+                      Column(
+                        children: [
+                          for (final item in items)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _LandingTimelineItemTile(
+                                item: item,
+                                onTap: () => _openLandingTimelineItem(item),
+                              ),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _openLandingTimelineItem(IssueTimelineItem item) {
+    _showLandingRelatedArticlesSheet(
+      title: '${item.keyword} 관련 이슈',
+      future: _resolveTimelineRelatedNews(item),
+    );
+  }
+
+  void _openLandingNewsCluster(NewsCluster cluster) {
+    _showLandingRelatedArticlesSheet(
+      title: cluster.articleCount > 1
+          ? '${cluster.representative.koreanTitle} 외 ${cluster.articleCount - 1}건'
+          : cluster.representative.koreanTitle,
+      future: _resolveClusterRelatedNews(cluster),
+    );
+  }
+
+  Future<List<TrendItem>> _resolveTimelineRelatedNews(IssueTimelineItem item) async {
+    try {
+      return await _api.fetchIssueTimelineNews(
+        issueId: item.id,
+        keyword: item.keyword,
+        newsIds: item.newsIds,
+      );
+    } catch (_) {}
+
+    return const <TrendItem>[];
+  }
+
+  Future<List<TrendItem>> _resolveClusterRelatedNews(NewsCluster cluster) async {
+    final merged = <String, TrendItem>{};
+    for (final item in cluster.items) {
+      final key = item.id > 0
+          ? 'id:${item.id}'
+          : [
+              item.link.trim(),
+              item.koreanTitle.trim(),
+              item.source.trim(),
+              item.published.trim(),
+            ].join('|');
+      merged.putIfAbsent(key, () => item);
+    }
+    return merged.values.toList();
+  }
+
+  void _showLandingRelatedArticlesSheet({
+    required String title,
+    required Future<List<TrendItem>> future,
+  }) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.82,
+          minChildSize: 0.45,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: FutureBuilder<List<TrendItem>>(
+                future: future,
+                builder: (context, snapshot) {
+                  final items = snapshot.data ?? const <TrendItem>[];
+                  final orderedItems = items.toList()
+                    ..sort((a, b) {
+                      final aDate = _landingTrendDate(a) ??
+                          DateTime.fromMillisecondsSinceEpoch(0);
+                      final bDate = _landingTrendDate(b) ??
+                          DateTime.fromMillisecondsSinceEpoch(0);
+                      return bDate.compareTo(aDate);
+                    });
+
+                  return CustomScrollView(
+                    controller: scrollController,
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 38,
+                                height: 4,
+                                margin: const EdgeInsets.only(right: 12),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade300,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  title,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: '닫기',
+                                onPressed: () => Navigator.of(context).pop(),
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (snapshot.connectionState == ConnectionState.waiting)
+                        const SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else if (snapshot.hasError)
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: _LandingSearchStateMessage(
+                            icon: Icons.error_outline_rounded,
+                            title: '관련 뉴스를 불러오지 못했습니다.',
+                            subtitle: '잠시 후 다시 시도해 주세요.',
+                          ),
+                        )
+                      else if (orderedItems.isEmpty)
+                        const SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: _LandingSearchStateMessage(
+                            icon: Icons.search_off_rounded,
+                            title: '관련 뉴스가 없습니다.',
+                            subtitle: '다른 키워드로 다시 확인해 보세요.',
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                          sliver: SliverList.separated(
+                            itemCount: orderedItems.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              return _LandingSearchResultTile(
+                                item: orderedItems[index],
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildLatestNewsSection() {
+    return FutureBuilder<List<TrendItem>>(
+      future: _latestNewsFuture,
+      builder: (context, snapshot) {
+        final loading = snapshot.connectionState == ConnectionState.waiting;
+        final rawItems = (snapshot.data ?? const <TrendItem>[])
+            .toList()
+          ..sort((a, b) {
+            final aDate = _landingTrendDate(a) ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bDate = _landingTrendDate(b) ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bDate.compareTo(aDate);
+          });
+        final clusters = groupSimilarNews(rawItems, maxClusters: 6);
+
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1020),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFAFBFC),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE8EEF5)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF0F172A).withOpacity(0.05),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '최신 뉴스',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '지금 들어온 기사부터 바로 확인합니다.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blueGrey.shade500,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    if (loading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 36),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (clusters.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 20),
+                        child: Text(
+                          '아직 불러온 뉴스가 없습니다.',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                      )
+                    else
+                      Column(
+                        children: [
+                          for (final cluster in clusters)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _LandingGroupedNewsTile(
+                                cluster: cluster,
+                                onTap: () => _openLandingNewsCluster(cluster),
+                              ),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMarketLinksSection() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1180),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          child: Row(
+            children: [
+              Expanded(
+                child: _smallNavCard(
+                  icon: Icons.psychology_rounded,
+                  title: '공포탐욕지수',
+                  subtitle: '비트코인 / 증시 심리',
+                  onTap: () => _openPage(const FearGreedPage()),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _smallNavCard(
+                  icon: Icons.show_chart_rounded,
+                  title: '증시 정보',
+                  subtitle: '주요 지수와 차트',
+                  onTap: () => _openPage(const MarketPage()),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  DateTime? _landingTrendDate(TrendItem trend) {
+    return _landingParseDate(trend.published) ??
+        _landingParseDate(trend.createdAt);
+  }
+
+  DateTime? _landingParseDate(String value) {
+    final raw = value.trim();
+    if (raw.isEmpty) return null;
+
+    return DateTime.tryParse(raw) ??
+        DateTime.tryParse(raw.replaceFirst(' ', 'T')) ??
+        DateTime.tryParse(raw.replaceAll('/', '-').replaceFirst(' ', 'T'));
+  }
+
+  Widget _smallNavCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.grey.withOpacity(0.12)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: Colors.blue.shade700),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _submitLandingSearch() {
@@ -454,14 +1089,15 @@ class _LandingScreenState extends State<LandingScreen> {
                 color: Colors.white,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
               ),
-              child: FutureBuilder<List<TrendItem>>(
-                future: future,
-                builder: (context, snapshot) {
-                  final items = snapshot.data ?? const <TrendItem>[];
+                child: FutureBuilder<List<TrendItem>>(
+                  future: future,
+                  builder: (context, snapshot) {
+                    final items = snapshot.data ?? const <TrendItem>[];
+                    final clusters = groupSimilarNews(items, maxClusters: 20);
 
-                  return CustomScrollView(
-                    controller: scrollController,
-                    slivers: [
+                    return CustomScrollView(
+                      controller: scrollController,
+                      slivers: [
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
@@ -522,12 +1158,20 @@ class _LandingScreenState extends State<LandingScreen> {
                         SliverPadding(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                           sliver: SliverList.separated(
-                            itemCount: items.length,
+                            itemCount: clusters.length,
                             separatorBuilder: (_, __) =>
                                 const SizedBox(height: 10),
                             itemBuilder: (context, index) {
+                              final cluster = clusters[index];
+                              if (cluster.articleCount > 1) {
+                                return _LandingGroupedNewsTile(
+                                  cluster: cluster,
+                                  onTap: () => _openLandingNewsCluster(cluster),
+                                );
+                              }
                               return _LandingSearchResultTile(
-                                  item: items[index]);
+                                item: cluster.representative,
+                              );
                             },
                           ),
                         ),
@@ -869,138 +1513,48 @@ class _LandingScreenState extends State<LandingScreen> {
 
   Widget _buildFooter() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 80, vertical: 60),
       decoration: BoxDecoration(
           border: Border(top: BorderSide(color: Colors.grey[200]!, width: 1))),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration:
-                    BoxDecoration(borderRadius: BorderRadius.circular(6)),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: Image.asset(
-                    'assets/icon/app_icon.png',
-                    width: 32,
-                    height: 32,
-                    fit: BoxFit.cover,
-                  ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1180),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 48),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration:
+                          BoxDecoration(borderRadius: BorderRadius.circular(6)),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.asset(
+                          'assets/icon/app_icon.png',
+                          width: 32,
+                          height: 32,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text('Pulse',
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87)),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 12),
-              const Text('Pulse',
-                  style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87)),
-            ],
-          ),
-          const SizedBox(height: 32),
-          Text('2026 Pulse. All rights reserved.',
-              style: TextStyle(fontSize: 14, color: Colors.grey[500])),
-        ],
-      ),
-    );
-  }
-}
-
-class _LandingHeroCopy extends StatelessWidget {
-  final bool isMobile;
-
-  const _LandingHeroCopy({required this.isMobile});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment:
-          isMobile ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.06),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.auto_awesome_rounded, size: 15, color: Colors.black87),
-              SizedBox(width: 6),
-              Text(
-                'AI Trend Intelligence',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-              ),
-            ],
+                const SizedBox(height: 32),
+                Text('2026 Pulse. All rights reserved.',
+                    style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+              ],
+            ),
           ),
         ),
-        const SizedBox(height: 22),
-        Text(
-          '오늘 뜨는 이슈를\n한눈에 확인하세요',
-          textAlign: isMobile ? TextAlign.center : TextAlign.left,
-          style: TextStyle(
-            fontSize: isMobile ? 42 : 68,
-            fontWeight: FontWeight.w900,
-            color: Colors.black87,
-            height: 1.05,
-          ),
-        ),
-        const SizedBox(height: 22),
-        Text(
-          '실시간 인기 키워드와 급상승 이슈, 뉴스 분위기를 한곳에서 보여드립니다.',
-          textAlign: isMobile ? TextAlign.center : TextAlign.left,
-          style: TextStyle(
-            fontSize: isMobile ? 16 : 20,
-            color: Colors.grey.shade700,
-            height: 1.55,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        const SizedBox(height: 28),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          alignment: isMobile ? WrapAlignment.center : WrapAlignment.start,
-          children: const [
-            _LandingPill(icon: Icons.radar_rounded, text: '급상승 이슈'),
-            _LandingPill(icon: Icons.thermostat_rounded, text: '뉴스 감정온도'),
-            _LandingPill(icon: Icons.search_rounded, text: '키워드 탐색'),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _LandingPill extends StatelessWidget {
-  final IconData icon;
-  final String text;
-
-  const _LandingPill({required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.82),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: Colors.blue.shade700),
-          const SizedBox(width: 7),
-          Text(
-            text,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
-          ),
-        ],
       ),
     );
   }
@@ -1057,11 +1611,12 @@ class _LandingInsightPanel extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.12),
+                  color: const Color(0xFFEAF1FF),
                   borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFDDE9FF)),
                 ),
                 child: const Icon(Icons.auto_awesome_rounded,
-                    color: Colors.white, size: 18),
+                    color: Color(0xFF2563EB), size: 18),
               ),
               const SizedBox(width: 10),
               const Expanded(
@@ -1235,11 +1790,18 @@ class _LandingInsightSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 520,
-      padding: const EdgeInsets.all(18),
+      height: 420,
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: const Color(0xFF101827),
-        borderRadius: BorderRadius.circular(28),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1277,30 +1839,28 @@ class _LandingInsightSkeleton extends StatelessWidget {
       width: width,
       height: height,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.12),
+        color: const Color(0xFFEAF1FF),
         borderRadius: BorderRadius.circular(12),
       ),
     );
   }
 }
 
-class _LandingInsightPanelFixed extends StatelessWidget {
+class _LandingTrendPanel extends StatelessWidget {
   final bool isLoading;
   final TrendInsightSnapshot? insight;
   final TextEditingController searchController;
   final VoidCallback onRefresh;
   final VoidCallback onSearch;
-  final VoidCallback onStart;
   final ValueChanged<TrendKeyword> onKeywordTap;
   final ValueChanged<RisingIssue> onRisingIssueTap;
 
-  const _LandingInsightPanelFixed({
+  const _LandingTrendPanel({
     required this.isLoading,
     required this.insight,
     required this.searchController,
     required this.onRefresh,
     required this.onSearch,
-    required this.onStart,
     required this.onKeywordTap,
     required this.onRisingIssueTap,
   });
@@ -1314,28 +1874,489 @@ class _LandingInsightPanelFixed extends StatelessWidget {
     final data = insight!;
     final score = _landingTrendScore(data);
     final delta = _landingTrendDelta(data);
-    final briefing = _landingBriefingTextSafe(data);
-    final keywords = data.keywords
-        .where((item) => _isLandingKeywordUseful(item.keyword))
-        .take(8)
-        .toList();
-    final rising = data.risingIssues
-        .where((item) => _isLandingKeywordUseful(item.keyword))
+    final timeLabel = _landingTimeLabel();
+    final bullets = _landingBriefingTextSafe(data)
+        .split('\n')
+        .where((line) => line.trim().isNotEmpty)
         .take(3)
         .toList();
-
+    final keywords = data.keywords
+        .where((item) => _isLandingKeywordUseful(item.keyword))
+        .take(6)
+        .toList();
+    final risingMap = {
+      for (final item in data.risingIssues) item.keyword: item,
+    };
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFF101827),
-        borderRadius: BorderRadius.circular(28),
+        color: const Color(0xFFFAFBFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF0F4F8)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.18),
-            blurRadius: 28,
-            offset: const Offset(0, 14),
+            color: const Color(0xFF0F172A).withOpacity(0.05),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
           ),
         ],
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 900;
+
+          Widget panel(Widget child, {bool expand = false, double padding = 24}) {
+            return Container(
+              width: double.infinity,
+              height: expand ? double.infinity : null,
+              padding: EdgeInsets.all(padding),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFE8EEF5)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color.fromRGBO(15, 23, 42, 0.05),
+                    blurRadius: 24,
+                    offset: Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: child,
+            );
+          }
+
+          Widget sectionTitle(String title, String subtitle, {bool compact = false}) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: const Color(0xFF0F172A),
+                    fontSize: compact ? 15 : 15,
+                    fontWeight: FontWeight.w600,
+                    height: 1.1,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: Colors.blueGrey.shade500,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            );
+          }
+
+          Widget trendScoreBlock() {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    const Text(
+                      '트렌드 점수',
+                      style: TextStyle(
+                        color: Color(0xFF0F172A),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      '$score',
+                      style: const TextStyle(
+                        color: Color(0xFF0F172A),
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                        height: 1,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      delta >= 0 ? '+$delta' : '$delta',
+                      style: TextStyle(
+                        color: delta >= 0
+                            ? const Color(0xFF2563EB)
+                            : Colors.blueGrey,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween<double>(begin: 0, end: score / 100),
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    builder: (context, value, _) {
+                      return LinearProgressIndicator(
+                        value: value,
+                        minHeight: 5,
+                        backgroundColor: const Color(0xFFE8EEF7),
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          Color(0xFF2563EB),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '현재 흐름을 100점 기준으로 간단히 보여줍니다.',
+                  style: TextStyle(
+                    color: Colors.blueGrey.shade500,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            );
+          }
+
+          Widget keywordsBlock() {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                sectionTitle(
+                  '실시간 인기 키워드',
+                  '지금 많이 언급되는 흐름을 빠르게 확인하세요',
+                ),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 12,
+                  children: [
+                    for (final keyword in keywords)
+                      _LandingKeywordChipV2(
+                        keyword: keyword,
+                        risingIssue: risingMap[keyword.keyword],
+                        onTap: () => onKeywordTap(keyword),
+                      ),
+                  ],
+                ),
+              ],
+            );
+          }
+
+          final leftPanel = panel(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                sectionTitle(
+                  '오늘의 주요 이슈',
+                  '지금 가장 뜨거운 흐름을 빠르게 확인하세요',
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'AI 브리핑',
+                  style: TextStyle(
+                    color: Color(0xFF0F172A),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                for (final bullet in bullets)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '• ',
+                          style: TextStyle(
+                            color: Color(0xFF2563EB),
+                            height: 1.4,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            bullet,
+                            style: TextStyle(
+                              color: Colors.blueGrey.shade800,
+                              fontSize: 14,
+                              height: 1.42,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                trendScoreBlock(),
+              ],
+            ),
+            expand: !isCompact,
+          );
+
+          final middlePanel = panel(
+            isCompact
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      keywordsBlock(),
+                      const SizedBox(height: 16),
+                      _buildSearchAndCta(searchController, onSearch),
+                    ],
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      keywordsBlock(),
+                      const Spacer(),
+                      _buildSearchAndCta(searchController, onSearch),
+                    ],
+                ),
+            expand: !isCompact,
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                leftPanel,
+                const SizedBox(height: 14),
+                middlePanel,
+              ],
+            );
+          }
+
+          return IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(flex: 50, child: leftPanel),
+                const SizedBox(width: 14),
+                Expanded(flex: 50, child: middlePanel),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSearchAndCta(
+    TextEditingController searchController,
+    VoidCallback onSearch,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: searchController,
+                onSubmitted: (_) => onSearch(),
+                style: const TextStyle(color: Color(0xFF0F172A)),
+                decoration: InputDecoration(
+                  hintText: '뉴스 키워드 검색',
+                  hintStyle: TextStyle(color: Colors.blueGrey.shade500),
+                  prefixIcon: Icon(Icons.search_rounded,
+                      color: Colors.blueGrey.shade500),
+                  filled: true,
+                  fillColor: const Color(0xFFF8FAFC),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xFF2563EB)),
+                  ),
+                  isDense: true,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            _HoverButton(
+              onTap: onSearch,
+              child: FilledButton.icon(
+                onPressed: onSearch,
+                icon: const Icon(Icons.bolt_rounded, size: 18),
+                label: const Text('실시간 뉴스 보기'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  foregroundColor: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 1,
+                  shadowColor: const Color(0xFF2563EB).withOpacity(0.20),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LandingMetaStat extends StatelessWidget {
+  final String label;
+  final String value;
+  final IconData? leadingIcon;
+  final Color? leadingColor;
+  final String? trailingBadge;
+
+  const _LandingMetaStat({
+    required this.label,
+    required this.value,
+    this.leadingIcon,
+    this.leadingColor,
+    this.trailingBadge,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 170),
+        curve: Curves.easeOut,
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFE6ECF3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                if (leadingIcon != null) ...[
+                  Icon(
+                    leadingIcon,
+                    size: 13,
+                    color: leadingColor ?? Colors.blueGrey.shade500,
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: Colors.blueGrey.shade500,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            if (trailingBadge == null)
+              Text(
+                value,
+                style: TextStyle(
+                  color: trailingBadge == null
+                      ? const Color(0xFF0F172A)
+                      : (leadingColor ?? const Color(0xFF0F172A)),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  height: 1.15,
+                ),
+              )
+            else
+              Row(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFECFDF3),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF16A34A),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          trailingBadge!,
+                          style: const TextStyle(
+                            color: Color(0xFF166534),
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      value,
+                      style: TextStyle(
+                        color: leadingColor ?? const Color(0xFF0F172A),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        height: 1.15,
+                      ),
+                    ),
+                  ),
+                ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingSentimentMiniBar extends StatelessWidget {
+  final NewsSentimentSummary sentiment;
+
+  const _LandingSentimentMiniBar({required this.sentiment});
+
+  @override
+  Widget build(BuildContext context) {
+    final total = sentiment.positiveRatio +
+        sentiment.neutralRatio +
+        sentiment.negativeRatio;
+    final positive = total == 0 ? 1 : sentiment.positiveRatio;
+    final neutral = total == 0 ? 1 : sentiment.neutralRatio;
+    final negative = total == 0 ? 1 : sentiment.negativeRatio;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE6ECF3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1343,178 +2364,64 @@ class _LandingInsightPanelFixed extends StatelessWidget {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(9),
+                width: 6,
+                height: 6,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Icon(
-                  Icons.auto_awesome_rounded,
-                  color: Colors.white,
-                  size: 18,
+                  color: const Color(0xFF2563EB).withOpacity(0.75),
+                  borderRadius: BorderRadius.circular(999),
                 ),
               ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  '뉴스 브리핑',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
+              const SizedBox(width: 6),
+              Text(
+                '감정 비율',
+                style: TextStyle(
+                  color: Colors.blueGrey.shade500,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: positive,
+                    child: Container(
+                      height: 4.5,
+                      color: Colors.green.withOpacity(0.68),
+                    ),
                   ),
-                ),
+                  Expanded(
+                    flex: neutral,
+                    child: Container(
+                      height: 4.5,
+                      color: Colors.blueGrey.withOpacity(0.48),
+                    ),
+                  ),
+                  Expanded(
+                    flex: negative,
+                    child: Container(
+                      height: 4.5,
+                      color: Colors.red.withOpacity(0.60),
+                    ),
+                  ),
+                ],
               ),
-              IconButton(
-                tooltip: '새로고침',
-                onPressed: onRefresh,
-                icon: const Icon(
-                  Icons.refresh_rounded,
-                  color: Colors.white,
-                  size: 19,
-                ),
-              ),
-            ],
+            ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 7),
           Text(
-            briefing,
+            '긍정 ${sentiment.positiveRatio}% · 중립 ${sentiment.neutralRatio}% · 부정 ${sentiment.negativeRatio}%',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.92),
-              fontSize: 15,
-              height: 1.55,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _LandingMetricCard(
-                  label: '트렌드 점수',
-                  value: '$score',
-                  suffix: '/100',
-                  color: Colors.indigoAccent,
-                  changeText: '${delta.abs()}',
-                  changeUp: delta >= 0,
-                  caption: '오늘 이슈 강도',
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _LandingMetricCard(
-                  label: '감정온도',
-                  value: '${data.sentiment.temperature}',
-                  suffix: '°',
-                  color: data.sentiment.temperature >= 71
-                      ? Colors.greenAccent
-                      : data.sentiment.temperature <= 30
-                          ? Colors.redAccent
-                          : Colors.lightBlueAccent,
-                  caption: _sentimentCaption(data.sentiment.temperature),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            '전일 대비 ${delta >= 0 ? '+' : ''}$delta · 긍정 ${data.sentiment.positiveRatio}% · 중립 ${data.sentiment.neutralRatio}% · 부정 ${data.sentiment.negativeRatio}%',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.64),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: searchController,
-            onSubmitted: (_) => onSearch(),
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: '뉴스 키워드 검색',
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
-              prefixIcon: Icon(
-                Icons.search_rounded,
-                color: Colors.white.withOpacity(0.7),
-              ),
-              suffixIcon: IconButton(
-                tooltip: '검색',
-                onPressed: onSearch,
-                icon: const Icon(
-                  Icons.arrow_forward_rounded,
-                  color: Colors.white,
-                ),
-              ),
-              filled: true,
-              fillColor: Colors.white.withOpacity(0.09),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide(color: Colors.white.withOpacity(0.12)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide(color: Colors.white.withOpacity(0.12)),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide(color: Colors.white.withOpacity(0.32)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            '실시간 인기 키워드',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (int i = 0; i < keywords.length; i++)
-                _LandingKeywordChip(
-                  rank: i + 1,
-                  keyword: keywords[i],
-                  onTap: () => onKeywordTap(keywords[i]),
-                ),
-            ],
-          ),
-          if (rising.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            const Text(
-              '급상승 이슈',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            const SizedBox(height: 8),
-            for (final issue in rising)
-              _LandingRisingIssueRow(
-                issue: issue,
-                onTap: () => onRisingIssueTap(issue),
-              ),
-          ],
-          const SizedBox(height: 18),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: onStart,
-              icon: const Icon(Icons.bolt_rounded, size: 18),
-              label: const Text('실시간 뉴스 분석 보기'),
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black87,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-              ),
+              color: Colors.blueGrey.shade600,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -1523,33 +2430,235 @@ class _LandingInsightPanelFixed extends StatelessWidget {
   }
 }
 
-class _LandingKeywordChip extends StatelessWidget {
-  final int rank;
-  final TrendKeyword keyword;
+class _LandingTimelineItemTile extends StatelessWidget {
+  final IssueTimelineItem item;
   final VoidCallback onTap;
 
-  const _LandingKeywordChip({
-    required this.rank,
-    required this.keyword,
+  const _LandingTimelineItemTile({
+    required this.item,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white.withOpacity(0.13),
-      borderRadius: BorderRadius.circular(999),
+    final stageLabel = _landingTimelineStageLabel(item.stage);
+    final timeLabel = _landingTimelineTimeLabel(item.lastSeenAt);
+    final growthLabel = item.growthRate >= 999
+        ? 'NEW'
+        : item.growthRate > 0
+            ? '+${item.growthRate}%'
+            : item.growthRate < 0
+                ? '${item.growthRate}%'
+                : '0%';
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
       child: InkWell(
-        borderRadius: BorderRadius.circular(999),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-          child: Text(
-            '$rank. ${keyword.keyword} · ${keyword.newsCount}',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w900,
+        borderRadius: BorderRadius.circular(14),
+        hoverColor: const Color(0xFF2563EB).withOpacity(0.03),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE6ECF3)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEEF4FF),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${item.rank}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF2563EB),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      item.title.isNotEmpty ? item.title : item.keyword,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF0F172A),
+                        fontSize: 14.5,
+                        height: 1.35,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                item.summary.isNotEmpty
+                    ? item.summary
+                    : '관련 기사 ${item.articleCount}건이 묶여 있는 이슈입니다.',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: Colors.blueGrey.shade600,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _LandingTinyBadge(
+                    text: item.category.isNotEmpty ? item.category : '이슈',
+                    foreground: const Color(0xFF2563EB),
+                    background: const Color(0xFFEEF4FF),
+                  ),
+                  _LandingTinyBadge(
+                    text: '기사 ${item.articleCount}건',
+                    foreground: const Color(0xFF334155),
+                    background: const Color(0xFFF1F5F9),
+                  ),
+                  _LandingTinyBadge(
+                    text: growthLabel,
+                    foreground: const Color(0xFFB45309),
+                    background: const Color(0xFFFFF7E6),
+                  ),
+                  _LandingTinyBadge(
+                    text: stageLabel,
+                    foreground: const Color(0xFF475569),
+                    background: const Color(0xFFF8FAFC),
+                  ),
+                  Text(
+                    timeLabel,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.blueGrey.shade500,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingTinyBadge extends StatelessWidget {
+  final String text;
+  final Color foreground;
+  final Color background;
+
+  const _LandingTinyBadge({
+    required this.text,
+    required this.foreground,
+    required this.background,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: foreground,
+          fontSize: 10.5,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingSectionDivider extends StatelessWidget {
+  const _LandingSectionDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Divider(
+      height: 1,
+      thickness: 0.4,
+      color: Color(0xFFF5F7FA),
+    );
+  }
+}
+
+class _LandingKeywordChipV2 extends StatelessWidget {
+  final TrendKeyword keyword;
+  final RisingIssue? risingIssue;
+  final VoidCallback onTap;
+
+  const _LandingKeywordChipV2({
+    required this.keyword,
+    required this.risingIssue,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final secondary = risingIssue == null
+        ? '관심도 ${keyword.newsCount}'
+        : risingIssue?.isNew == true
+            ? 'NEW'
+            : (risingIssue?.growthRate ?? 0) > 0
+                ? '▲${risingIssue!.growthRate}'
+                : (risingIssue?.growthRate ?? 0) < 0
+                    ? '▼${risingIssue!.growthRate.abs()}'
+                    : '관심도 ${keyword.newsCount}';
+    return _HoverButton(
+      onTap: onTap,
+      child: Material(
+        color: const Color(0xFFF3F4F6),
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          hoverColor: const Color(0xFF2563EB).withOpacity(0.06),
+          splashColor: const Color(0xFF2563EB).withOpacity(0.08),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: keyword.keyword,
+                    style: const TextStyle(
+                      color: Color(0xFF0F172A),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  TextSpan(
+                    text: ' · $secondary',
+                    style: TextStyle(
+                      color: Colors.blueGrey.shade500,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1558,110 +2667,568 @@ class _LandingKeywordChip extends StatelessWidget {
   }
 }
 
-class _LandingSearchResultTile extends StatelessWidget {
+class _LandingHotIssueCard extends StatelessWidget {
+  final RisingIssue issue;
+  final List<String> keywords;
+  final VoidCallback onTap;
+
+  const _LandingHotIssueCard({
+    required this.issue,
+    required this.keywords,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final displayKeywords = keywords.take(2).toList();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        hoverColor: const Color(0xFF2563EB).withOpacity(0.03),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEEF4FF),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Center(
+                  child: Icon(
+                    Icons.trending_up_rounded,
+                    size: 14,
+                    color: Color(0xFF2563EB),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      issue.representativeTitle.isNotEmpty
+                          ? issue.representativeTitle
+                          : issue.keyword,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF0F172A),
+                        fontSize: 14,
+                        height: 1.35,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      '관련 기사 ${issue.currentCount}건',
+                      style: TextStyle(
+                        color: Colors.blueGrey.shade600,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    if (issue.keyword.trim().isNotEmpty)
+                      _LandingMiniTag(text: issue.keyword.trim()),
+                    for (final keyword in displayKeywords
+                        .where((item) => item != issue.keyword))
+                      _LandingMiniTag(text: keyword),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingMiniTag extends StatelessWidget {
+  final String text;
+
+  const _LandingMiniTag({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F4F6),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFF334155),
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingGroupedNewsTile extends StatefulWidget {
+  final NewsCluster cluster;
+  final VoidCallback onTap;
+
+  const _LandingGroupedNewsTile({
+    required this.cluster,
+    required this.onTap,
+  });
+
+  @override
+  State<_LandingGroupedNewsTile> createState() => _LandingGroupedNewsTileState();
+}
+
+class _LandingGroupedNewsTileState extends State<_LandingGroupedNewsTile> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.cluster.representative;
+    final hasLink = item.link.trim().isNotEmpty;
+    final source = item.source.trim().isEmpty ? 'News' : item.source.trim();
+    final category = item.category.trim().isEmpty ? 'General' : item.category.trim();
+    final timeLabel = _landingCompactTime(item.published.isNotEmpty
+        ? item.published
+        : item.createdAt);
+    final extraCount = widget.cluster.articleCount - 1;
+
+    return MouseRegion(
+      cursor: hasLink ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onEnter: (_) {
+        if (mounted) setState(() => _isHovered = true);
+      },
+      onExit: (_) {
+        if (mounted) setState(() => _isHovered = false);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        transform: Matrix4.translationValues(0, _isHovered ? -2 : 0, 0),
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: widget.onTap,
+            hoverColor: const Color(0xFF2563EB).withOpacity(0.03),
+            splashColor: const Color(0xFF2563EB).withOpacity(0.05),
+            child: Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _isHovered
+                      ? const Color(0xFFD8E5FF)
+                      : const Color(0xFFE5E7EB),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF0F172A).withOpacity(_isHovered ? 0.06 : 0.04),
+                    blurRadius: _isHovered ? 24 : 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF4FF),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Text(
+                            source.isNotEmpty ? source[0].toUpperCase() : 'N',
+                            style: const TextStyle(
+                              color: Color(0xFF2563EB),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          source,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade700,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3F4F6),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          category,
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade600,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        timeLabel,
+                        style: TextStyle(
+                          color: Colors.blueGrey.shade500,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    item.koreanTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF0F172A),
+                      fontSize: 15,
+                      height: 1.28,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (item.summaryKr.trim().isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      item.summaryKr.trim(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.blueGrey.shade600,
+                        fontSize: 14,
+                        height: 1.42,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF4FF),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          extraCount > 0 ? '묶음 ${widget.cluster.articleCount}건' : '단일 기사',
+                          style: TextStyle(
+                            color: Colors.blue.shade700,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '언론사 ${widget.cluster.sourceCount}곳',
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade600,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      if (extraCount > 0) ...[
+                        const Spacer(),
+                        Text(
+                          '외 $extraCount건',
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade500,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LandingSearchResultTile extends StatefulWidget {
   final TrendItem item;
 
   const _LandingSearchResultTile({required this.item});
 
   @override
-  Widget build(BuildContext context) {
-    final hasLink = item.link.trim().isNotEmpty;
-    final meta = [
-      if (item.source.trim().isNotEmpty) item.source.trim(),
-      if (item.category.trim().isNotEmpty) item.category.trim(),
-      if (item.published.trim().isNotEmpty) item.published.trim(),
-    ].join(' · ');
+  State<_LandingSearchResultTile> createState() => _LandingSearchResultTileState();
+}
 
-    return Material(
-      color: const Color(0xFFF7F8FA),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: hasLink ? () => _openArticle(context, item.link) : null,
-        child: Container(
-          padding: const EdgeInsets.all(15),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (meta.isNotEmpty) ...[
-                Text(
-                  meta,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.grey.shade600,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
+class _LandingSearchResultTileState extends State<_LandingSearchResultTile> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final hasLink = item.link.trim().isNotEmpty;
+    final source = item.source.trim().isEmpty ? 'News' : item.source.trim();
+    final category = item.category.trim().isEmpty ? 'General' : item.category.trim();
+    final timeLabel = _landingCompactTime(item.published.isNotEmpty
+        ? item.published
+        : item.createdAt);
+
+    return MouseRegion(
+      cursor: hasLink ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onEnter: (_) {
+        if (mounted) setState(() => _isHovered = true);
+      },
+      onExit: (_) {
+        if (mounted) setState(() => _isHovered = false);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        transform: Matrix4.translationValues(0, _isHovered ? -2 : 0, 0),
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: hasLink ? () => _openArticle(context, item.link) : null,
+            hoverColor: const Color(0xFF2563EB).withOpacity(0.03),
+            splashColor: const Color(0xFF2563EB).withOpacity(0.05),
+            child: Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _isHovered
+                      ? const Color(0xFFD8E5FF)
+                      : const Color(0xFFE5E7EB),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF0F172A).withOpacity(_isHovered ? 0.06 : 0.04),
+                    blurRadius: _isHovered ? 24 : 20,
+                    offset: const Offset(0, 8),
                   ),
-                ),
-                const SizedBox(height: 7),
-              ],
-              Text(
-                item.koreanTitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.black87,
-                  fontSize: 15,
-                  height: 1.35,
-                  fontWeight: FontWeight.w900,
-                ),
+                ],
               ),
-              if (item.summaryKr.trim().isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  item.summaryKr.trim(),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                    fontSize: 13,
-                    height: 1.45,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 10),
-              Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.auto_graph_rounded,
-                    size: 15,
-                    color: Colors.blue.shade700,
+                  Row(
+                    children: [
+                      Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF4FF),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Text(
+                            source.isNotEmpty ? source[0].toUpperCase() : 'N',
+                            style: const TextStyle(
+                              color: Color(0xFF2563EB),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          source,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade700,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3F4F6),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          category,
+                          style: TextStyle(
+                            color: Colors.blueGrey.shade600,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        timeLabel,
+                        style: TextStyle(
+                          color: Colors.blueGrey.shade500,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 5),
+                  const SizedBox(height: 8),
                   Text(
-                    '중요도 ${item.importance}',
-                    style: TextStyle(
-                      color: Colors.blue.shade700,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
+                    item.koreanTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF0F172A),
+                      fontSize: 15,
+                      height: 1.28,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  if (hasLink) ...[
-                    const Spacer(),
-                    Icon(
-                      Icons.open_in_new_rounded,
-                      size: 15,
-                      color: Colors.blue.shade700,
-                    ),
-                    const SizedBox(width: 4),
+                  if (item.summaryKr.trim().isNotEmpty) ...[
+                    const SizedBox(height: 6),
                     Text(
-                      '원문 보기',
+                      item.summaryKr.trim(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: Colors.blue.shade700,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w900,
+                        color: Colors.blueGrey.shade600,
+                        fontSize: 14,
+                        height: 1.42,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF4FF),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.auto_graph_rounded,
+                              size: 13,
+                              color: Colors.blue.shade700,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '중요도 ${item.importance}',
+                              style: TextStyle(
+                                color: Colors.blue.shade700,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (hasLink) ...[
+                        const Spacer(),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 170),
+                          curve: Curves.easeOut,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _isHovered
+                                ? const Color(0xFFEEF4FF)
+                                : const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: _isHovered
+                                  ? const Color(0xFFD8E5FF)
+                                  : const Color(0xFFE2E8F0),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.open_in_new_rounded,
+                                size: 13,
+                                color: _isHovered
+                                    ? const Color(0xFF2563EB)
+                                    : Colors.blueGrey.shade500,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                '원문 보기',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: _isHovered
+                                      ? const Color(0xFF2563EB)
+                                      : Colors.blueGrey.shade600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1799,9 +3366,8 @@ class _LandingMetricCard extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                   decoration: BoxDecoration(
-                    color:
-                        (changeUp ? Colors.redAccent : Colors.lightBlueAccent)
-                            .withOpacity(0.15),
+                    color: (changeUp ? Colors.greenAccent : Colors.redAccent)
+                        .withOpacity(0.14),
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Row(
@@ -1812,17 +3378,14 @@ class _LandingMetricCard extends StatelessWidget {
                             ? Icons.arrow_upward_rounded
                             : Icons.arrow_downward_rounded,
                         size: 12,
-                        color: changeUp
-                            ? Colors.redAccent
-                            : Colors.lightBlueAccent,
+                        color: changeUp ? Colors.greenAccent : Colors.redAccent,
                       ),
                       const SizedBox(width: 2),
                       Text(
                         changeText!,
                         style: TextStyle(
-                          color: changeUp
-                              ? Colors.redAccent
-                              : Colors.lightBlueAccent,
+                          color:
+                              changeUp ? Colors.greenAccent : Colors.redAccent,
                           fontSize: 11,
                           fontWeight: FontWeight.w900,
                         ),
@@ -1922,18 +3485,28 @@ class _LandingRisingIssueRow extends StatelessWidget {
 }
 
 int _landingTrendScore(TrendInsightSnapshot insight) {
-  final keywordPower =
-      insight.keywords.fold<int>(0, (sum, item) => sum + item.newsCount);
-  final risingPower = insight.risingIssues.fold<int>(
-    0,
-    (sum, item) => sum + item.currentCount + item.increaseCount,
-  );
-  final sentimentBalance =
-      100 - (50 - insight.sentiment.temperature).abs().clamp(0, 50);
+  final topKeywords = insight.keywords.take(5).toList();
+  final topRising = insight.risingIssues.take(3).toList();
 
-  return (keywordPower * 2 + risingPower * 4 + sentimentBalance)
-      .clamp(0, 100)
-      .toInt();
+  final keywordCount = topKeywords.isEmpty
+      ? 0
+      : topKeywords.fold<int>(0, (sum, item) => sum + item.newsCount) ~/
+          topKeywords.length;
+  final risingCount = topRising.isEmpty
+      ? 0
+      : topRising.fold<int>(
+              0,
+              (sum, item) => sum + item.currentCount + item.increaseCount,
+            ) ~/
+          topRising.length;
+
+  final keywordScore = _landingTrendRatioScale(keywordCount, 130);
+  final risingScore = _landingTrendRatioScale(risingCount, 90);
+  final sentimentScore =
+      1.0 - ((insight.sentiment.temperature - 50).abs() / 50).clamp(0, 1);
+
+  final mixed = keywordScore * 0.43 + risingScore * 0.37 + sentimentScore * 0.20;
+  return (12 + mixed * 76).round().clamp(0, 100);
 }
 
 int _landingTrendDelta(TrendInsightSnapshot insight) {
@@ -1946,6 +3519,69 @@ int _landingTrendDelta(TrendInsightSnapshot insight) {
   return (averageIncrease * 2).round().clamp(-20, 40);
 }
 
+List<String> _landingBriefingBullets(TrendInsightSnapshot insight) {
+  final bullets = <String>[];
+  final keywords = insight.keywords
+      .map((item) => _cleanLandingKeyword(item.keyword))
+      .where(_isLandingKeywordUseful)
+      .take(3)
+      .toList();
+  final rising = insight.risingIssues
+      .map((item) => _cleanLandingKeyword(item.keyword))
+      .where(_isLandingKeywordUseful)
+      .take(2)
+      .toList();
+
+  if (keywords.isNotEmpty) {
+    bullets.add('${_joinKoreanListSafe(keywords)} 관련 기사 급증');
+  }
+  if (rising.isNotEmpty) {
+    bullets.add('${_joinKoreanListSafe(rising)} 이슈가 빠르게 확대 중');
+  }
+
+  if (insight.sentiment.temperature >= 71) {
+    bullets.add('전체 분위기는 긍정적으로 유지되고 있습니다');
+  } else if (insight.sentiment.temperature <= 30) {
+    bullets.add('전체 분위기는 다소 불안한 흐름입니다');
+  } else {
+    bullets.add('전체 분위기는 중립권에서 움직이고 있습니다');
+  }
+
+  while (bullets.length < 3) {
+    bullets.add('실시간 뉴스 흐름을 계속 추적 중입니다');
+  }
+
+  return bullets.take(5).toList();
+}
+
+List<String> _landingIssueKeywords(RisingIssue issue) {
+  final base = _cleanLandingKeyword(issue.keyword);
+  final derived = _cleanLandingKeyword(issue.representativeTitle)
+      .split(' ')
+      .where(_isLandingKeywordUseful)
+      .where((value) => value != base)
+      .take(2)
+      .toList();
+
+  return [
+    if (_isLandingKeywordUseful(base)) base,
+    ...derived,
+  ];
+}
+
+String _landingKeywordLabel(TrendKeyword keyword, RisingIssue? risingIssue) {
+  final base = _cleanLandingKeyword(keyword.keyword);
+  if (risingIssue != null) {
+    if (risingIssue.isNew) return '$base NEW';
+    if (risingIssue.growthRate > 0) return '$base ▲${risingIssue.growthRate}';
+    if (risingIssue.growthRate < 0) {
+      return '$base ▼${risingIssue.growthRate.abs()}';
+    }
+  }
+
+  return '$base · 관심도 ${keyword.newsCount}';
+}
+
 String _sentimentCaption(int temperature) {
   if (temperature >= 71) {
     return '뉴스 분위기: 기대감 우세';
@@ -1954,6 +3590,54 @@ String _sentimentCaption(int temperature) {
     return '뉴스 분위기: 불안감 우세';
   }
   return '뉴스 분위기: 중립 흐름';
+}
+
+String _landingSectorMoodLabel(TrendInsightSnapshot insight) {
+  final sectorTemperatures = insight.keywords
+      .where((item) =>
+          (item.category == '경제' || item.category == '세계') &&
+          item.sentimentTemperature != null)
+      .map((item) => item.sentimentTemperature!)
+      .toList();
+
+  final temperature = sectorTemperatures.isNotEmpty
+      ? (sectorTemperatures.reduce((a, b) => a + b) / sectorTemperatures.length)
+          .round()
+      : insight.sentiment.temperature;
+
+  if (temperature >= 71) return '좋음';
+  if (temperature <= 30) return '나쁨';
+  return '보통';
+}
+
+String _landingTimelineStageLabel(String stage) {
+  switch (stage) {
+    case 'new':
+      return '신규';
+    case 'peak':
+      return '정점';
+    case 'cooling':
+      return '하락';
+    case 'ended':
+      return '종료';
+    case 'rising':
+    default:
+      return '상승';
+  }
+}
+
+String _landingTimelineTimeLabel(String value) {
+  final parsed = DateTime.tryParse(value.trim());
+  if (parsed == null) return '방금 전';
+  final diff = DateTime.now().difference(parsed);
+  if (!diff.isNegative) {
+    if (diff.inMinutes < 1) return '방금 전';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}분 전';
+    if (diff.inHours < 24) return '${diff.inHours}시간 전';
+  }
+  final hour = parsed.hour.toString().padLeft(2, '0');
+  final minute = parsed.minute.toString().padLeft(2, '0');
+  return '$hour:$minute';
 }
 
 String _landingBriefing(TrendInsightSnapshot insight) {
@@ -2006,6 +3690,11 @@ String _landingBriefingText(TrendInsightSnapshot insight) {
           : '전반적으로 중립적인 흐름입니다.';
 
   return '오늘은 $keywordSentence\n$risingSentence\n전체 뉴스 분위기는 $mood';
+}
+
+double _landingTrendRatioScale(int value, int cap) {
+  if (cap <= 0 || value <= 0) return 0;
+  return (value / (value + cap)).clamp(0.0, 1.0);
 }
 
 String _joinKoreanList(List<String> values) {

@@ -20,11 +20,18 @@ const CATEGORY_SEARCH_TERMS = {
   'IT/과학': ['IT', 'AI', '반도체', '삼성', '애플'],
 };
 
-const MAX_ANALYSIS_PER_RUN = 4;
+const MAX_ANALYSIS_PER_RUN = 2;
+const MAX_ANALYSIS_CANDIDATES = 6;
 const MAX_SEARCH_TERMS_PER_RUN = 2;
 const MAX_ARTICLE_AGE_HOURS = 12;
-const ANALYSIS_PAUSE_MS = 250;
+const ANALYSIS_PAUSE_MS = 120;
+const GROQ_MAX_TOKENS = 320;
 const NAVER_DISPLAY_COUNT = 30;
+const ISSUE_TIMELINE_WINDOWS = [
+  { period: '1h', hours: 1 },
+  { period: '6h', hours: 6 },
+  { period: '24h', hours: 24 },
+];
 
 const VALID_CATEGORIES = ['경제', '세계', '사회', '정치', '생활/문화', 'IT/과학'];
 
@@ -66,6 +73,15 @@ export default {
 
       if (path === '/api/trends/sentiment' && request.method === 'GET') {
         return await handleGetTrendSentiment(url, env, corsHeaders);
+      }
+
+      if (path === '/api/trend/timeline' && request.method === 'GET') {
+        return await handleGetTrendTimeline(url, env, corsHeaders);
+      }
+
+      if (path.match(/^\/api\/trend\/timeline\/[^/]+\/news$/) && request.method === 'GET') {
+        const issueId = path.split('/')[4];
+        return await handleGetIssueTimelineNews(url, issueId, env, corsHeaders);
       }
 
       if (path === '/api/news/search' && request.method === 'GET') {
@@ -135,7 +151,9 @@ export default {
 
     try {
       const result = await collectAllNews(env);
+      const issueTimelineResult = await refreshIssueTimeline(env);
       console.log('=== Cron job completed ===\nResult:', JSON.stringify(result));
+      console.log('=== Issue timeline refreshed ===\nResult:', JSON.stringify(issueTimelineResult));
     } catch (error) {
       console.error('Cron job failed:', error.message);
     }
@@ -150,13 +168,17 @@ async function handleGetTrends(url, env, corsHeaders) {
   const limit = clampNumber(parseInt(url.searchParams.get('limit') || '20', 10), 1, 50);
   const offset = Math.max(parseInt(url.searchParams.get('offset') || '0', 10), 0);
   const category = url.searchParams.get('category') || '';
+  const sort = normalizeSort(url.searchParams.get('sort') || 'latest');
+  const period = normalizePeriod(url.searchParams.get('period') || '');
 
   const query = 'id,korean_title,summary_kr,importance,tickers,category,link,source,published,created_at,view_count';
   const filters = category ? `&category=eq.${encodeURIComponent(category)}` : '';
+  const periodFilter = buildPeriodFilter(period);
+  const order = buildTrendOrder(sort);
 
   const { data, error } = await querySupabase(
     env,
-    `trends?select=${query}${filters}&order=importance.desc,published.desc,created_at.desc&limit=${limit}&offset=${offset}`
+    `trends?select=${query}${filters}${periodFilter}&order=${order}&limit=${limit}&offset=${offset}`
   );
 
   if (error) throw new Error(error.message || 'Failed to fetch trends');
@@ -166,6 +188,8 @@ async function handleGetTrends(url, env, corsHeaders) {
     count: data.length,
     offset,
     category,
+    sort,
+    period,
     has_more: data.length === limit,
     data: data.map(row => ({
       ...row,
@@ -296,6 +320,234 @@ async function handleGetTrendSentiment(url, env, corsHeaders) {
   }, corsHeaders);
 }
 
+async function handleGetTrendTimeline(url, env, corsHeaders) {
+  const period = normalizePeriod(url.searchParams.get('period') || '24h');
+  const category = url.searchParams.get('category') || '';
+  const limit = clampNumber(parseInt(url.searchParams.get('limit') || '10', 10), 1, 30);
+  const minScore = clampNumber(parseInt(url.searchParams.get('min_score') || '0', 10), 0, 100);
+
+  const filters = [
+    `period=eq.${encodeURIComponent(period)}`,
+    category ? `category=eq.${encodeURIComponent(category)}` : '',
+    `score=gte.${minScore}`,
+  ].filter(Boolean);
+  const endpoint = `issue_clusters?select=id,period,category,canonical_keyword,representative_title,summary,article_count,source_count,growth_rate,score,sentiment_temperature,stage,first_seen_at,last_seen_at,created_at,updated_at&${filters.join('&')}&order=score.desc,last_seen_at.desc&limit=${limit}`;
+  const { data, error } = await querySupabase(env, endpoint);
+
+  if (error) {
+    throw new Error(error.message || 'Failed to fetch trend timeline');
+  }
+
+  let items = (data || []).map((row, index) => ({
+    id: row.id,
+    rank: index + 1,
+    period: row.period,
+    category: row.category,
+    keyword: row.canonical_keyword || '',
+    title: row.representative_title || row.canonical_keyword || '',
+    summary: row.summary || '',
+    articleCount: row.article_count || 0,
+    sourceCount: row.source_count || 0,
+    growthRate: Number(row.growth_rate || 0),
+    score: Number(row.score || 0),
+    sentimentTemperature: row.sentiment_temperature == null ? null : Number(row.sentiment_temperature),
+    stage: row.stage || 'rising',
+    firstSeenAt: row.first_seen_at || row.created_at || '',
+    lastSeenAt: row.last_seen_at || row.updated_at || row.created_at || '',
+    newsIds: [],
+  }));
+
+  if (items.length === 0) {
+    items = await buildLiveTrendTimelineFromTrends(env, period, category, limit, minScore);
+  }
+
+  if (items.length > 0) {
+    const issueIds = items.map(item => String(item.id)).filter(Boolean);
+    const { data: mappingRows } = await querySupabase(
+      env,
+      `issue_cluster_articles?select=issue_cluster_id,news_id&issue_cluster_id=in.(${issueIds.join(',')})&order=created_at.desc`
+    );
+
+    const mappingMap = new Map();
+    for (const row of mappingRows || []) {
+      const key = String(row.issue_cluster_id || '');
+      if (!key) continue;
+      if (!mappingMap.has(key)) {
+        mappingMap.set(key, []);
+      }
+      mappingMap.get(key).push(Number(row.news_id));
+    }
+
+    items = items.map(item => ({
+      ...item,
+      newsIds: Array.from(new Set([
+        ...(Array.isArray(item.newsIds) ? item.newsIds : []),
+        ...(mappingMap.get(String(item.id)) || []),
+      ])).filter(value => Number.isFinite(value) && value > 0),
+    }));
+  }
+
+  return jsonResponse({
+    success: true,
+    period,
+    category,
+    limit,
+    items,
+  }, corsHeaders);
+}
+
+async function handleGetIssueTimelineNews(url, issueId, env, corsHeaders) {
+  if (!issueId) {
+    return jsonResponse({ success: false, error: 'Missing issue id' }, corsHeaders, 400);
+  }
+
+  let cleanIssueId = issueId.split('?')[0];
+  try {
+    cleanIssueId = decodeURIComponent(cleanIssueId);
+  } catch (_) {}
+  const keywordHint = normalizeSearchText(url.searchParams.get('keyword') || '');
+  const newsIdsParam = String(url.searchParams.get('news_ids') || '').trim();
+
+  if (newsIdsParam) {
+    const requestedIds = newsIdsParam
+      .split(',')
+      .map(value => parseInt(value.trim(), 10))
+      .filter(Number.isFinite);
+
+    if (requestedIds.length > 0) {
+      const { data: directTrends, error: directError } = await querySupabase(
+        env,
+        `trends?select=id,korean_title,original_title,summary_kr,importance,tickers,category,link,source,published,created_at,view_count&id=in.(${requestedIds.join(',')})&order=published.desc,created_at.desc`
+      );
+
+      if (directError) {
+        throw new Error(directError.message || 'Failed to fetch issue news');
+      }
+
+      return jsonResponse({
+        success: true,
+        issueId: cleanIssueId,
+        total: (directTrends || []).length,
+        items: (directTrends || []).map((row) => ({
+          ...row,
+          tickers: row.tickers ? row.tickers.split(',').filter(Boolean) : [],
+        })),
+      }, corsHeaders);
+    }
+  }
+
+  const { data: mapRows, error: mapError } = await querySupabase(
+    env,
+    `issue_cluster_articles?select=news_id,similarity_score,created_at&issue_cluster_id=eq.${encodeURIComponent(cleanIssueId)}&order=similarity_score.desc,created_at.desc&limit=100`
+  );
+
+  if (mapError) {
+    throw new Error(mapError.message || 'Failed to fetch issue articles');
+  }
+
+  const newsIds = (mapRows || [])
+    .map((row) => row.news_id)
+    .filter((value) => value !== null && value !== undefined)
+    .join(',');
+
+  if (!newsIds) {
+    const { data: issueRows } = await querySupabase(
+      env,
+      `issue_clusters?select=canonical_keyword,representative_title,summary,category&period=eq.${encodeURIComponent(url.searchParams.get('period') || '24h')}&id=eq.${encodeURIComponent(cleanIssueId)}`
+    );
+
+    const issueRow = Array.isArray(issueRows) ? issueRows[0] : null;
+    const searchHints = [
+      keywordHint,
+      normalizeSearchText(issueRow?.canonical_keyword || ''),
+    ].filter(Boolean);
+
+    const trends = await getRecentTrends(env, 72, '', 1200);
+    const matched = trends.filter(row => {
+      const text = trendSearchText(row);
+      if (searchHints.length === 0) {
+        return false;
+      }
+      return searchHints.some(hint => {
+        const parts = hint.split(/[·|,\/\s]+/g).map(part => normalizeSearchText(part)).filter(Boolean);
+        if (parts.length === 0) {
+          return text.includes(hint);
+        }
+        return parts.every(part => text.includes(part));
+      });
+    });
+
+    return jsonResponse({
+      success: true,
+      issueId: cleanIssueId,
+      total: matched.length,
+      items: matched.map((row) => ({
+        ...row,
+        tickers: row.tickers ? row.tickers.split(',').filter(Boolean) : [],
+      })),
+    }, corsHeaders);
+  }
+
+  const { data: trends, error: trendsError } = await querySupabase(
+    env,
+    `trends?select=id,korean_title,original_title,summary_kr,importance,tickers,category,link,source,published,created_at,view_count&id=in.(${newsIds})&order=published.desc,created_at.desc`
+  );
+
+  if (trendsError) {
+    throw new Error(trendsError.message || 'Failed to fetch issue news');
+  }
+
+  let resolvedTrends = trends || [];
+
+  if (resolvedTrends.length < 2) {
+    const { data: issueRows } = await querySupabase(
+      env,
+      `issue_clusters?select=canonical_keyword,representative_title,summary,category&id=eq.${encodeURIComponent(cleanIssueId)}`
+    );
+
+    const issueRow = Array.isArray(issueRows) ? issueRows[0] : null;
+    const hints = [
+      keywordHint,
+      normalizeSearchText(issueRow?.canonical_keyword || ''),
+    ].filter(Boolean);
+
+    const trendsPool = await getRecentTrends(env, 72, '', 1200);
+    const extraMatches = trendsPool.filter(row => {
+      const text = trendSearchText(row);
+      return hints.some(hint => {
+        const parts = hint.split(/[·|,\/\s]+/g)
+          .map(part => normalizeSearchText(part))
+          .filter(Boolean);
+        if (parts.length === 0) {
+          return text.includes(hint);
+        }
+        return parts.every(part => text.includes(part));
+      });
+    });
+
+    const merged = new Map();
+    for (const row of resolvedTrends) {
+      merged.set(row.id, row);
+    }
+    for (const row of extraMatches) {
+      merged.set(row.id, row);
+    }
+
+    resolvedTrends = Array.from(merged.values())
+      .sort((a, b) => trendTimestamp(b) - trendTimestamp(a));
+  }
+
+  return jsonResponse({
+    success: true,
+    issueId,
+    total: resolvedTrends.length,
+    items: resolvedTrends.map((row) => ({
+      ...row,
+      tickers: row.tickers ? row.tickers.split(',').filter(Boolean) : [],
+    })),
+  }, corsHeaders);
+}
+
 async function handleSearchNews(url, env, corsHeaders) {
   const query = normalizeSearchText(url.searchParams.get('q') || '');
   const category = url.searchParams.get('category') || '';
@@ -376,10 +628,12 @@ async function handleTriggerCollection(request, env, corsHeaders) {
 
   try {
     const result = await collectAllNews(env);
+    const issueTimelineResult = await refreshIssueTimeline(env);
     return jsonResponse({
       success: true,
       message: 'Collection completed',
       result,
+      issueTimelineResult,
     }, corsHeaders);
   } catch (error) {
     console.error('Trigger error:', error.message);
@@ -469,7 +723,8 @@ async function collectAllNews(env) {
       return true;
     });
 
-    articles = articles.slice(0, Math.max(MAX_ANALYSIS_PER_RUN * 2, 12));
+    articles = prioritizeArticlesForAnalysis(articles, currentCategory)
+      .slice(0, Math.max(MAX_ANALYSIS_CANDIDATES, MAX_ANALYSIS_PER_RUN * 2));
     totalCandidates = articles.length;
 
     console.log(`After DB duplicate filter: ${articles.length} candidates / ${totalSkippedExisting} existing skipped`);
@@ -617,62 +872,32 @@ async function fetchNaverNews(query, env, limit) {
 
 async function analyzeSingleArticle(article, env) {
   const safeTitle = sanitizePromptText(article.title);
-  const safeDescription = sanitizePromptText(article.description);
+  const safeDescription = truncateText(sanitizePromptText(article.description), 220);
   const isKorean = /[\uAC00-\uD7A3]/.test(safeTitle);
 
   const prompt = isKorean
-    ? `다음 뉴스를 분석해주세요:
-원래 카테고리: ${article.category}
+    ? `다음 뉴스를 간단히 분석해 주세요.
+카테고리: ${article.category}
 제목: ${safeTitle}
-내용: ${safeDescription}
+본문: ${safeDescription}
 
-[1] 카테고리 분류 규칙
-- 경제: 주식, 환율, 금리, 부동산, 기업 실적, 증시, 코스피, 원/달러, 은행, 금융 정책
-- 사회: 사건, 사고, 재난, 범죄, 법원 판결, 화재, 교통사고, 보건 이슈
-- 정치: 국회, 대통령, 법안, 선거, 정당, 정부 정책, 국내 정치 이슈
-- 세계: 국제 정세, 해외 경제, 전쟁, 분쟁, 미국/중국/일본/유럽 주요 사건
-- 생활/문화: 영화, 드라마, 음악, 전시, 공연, 패션, 요리, 여행, 레저, 엔터테인먼트, 대중문화
-- IT/과학: AI, 반도체, 삼성전자, 애플, 구글, 테슬라, 우주, 과학 기술 혁신
-
-[2] 중요도 산정 기준
-- 5점: 글로벌 거시경제 변동, 국가적 대형 재난, 기준금리 결정, 빅테크 중대 발표
-- 4점: 주요 대기업 실적/M&A, 국가 주요 법안 통과, 시장 주도 이슈
-- 3점: 일반적인 경제 지표, 특정 산업 섹터 동향, 사회적으로 관심이 큰 일반 뉴스
-- 2점: 단일 중소기업 소식, 파급력이 적은 일상 뉴스
-- 1점: 단순 홍보/광고 기사, 개인 가십, 지역의 작은 사건사고
-
-반드시 아래 형식의 JSON으로만 응답하세요:
+반환 형식은 JSON만 허용합니다.
 {
   "korean_title": "원본 제목 그대로",
-  "summary_kr": "핵심만 2~3줄로 요약",
-  "importance": 숫자,
-  "tickers": ["관련미국주식티커", "없으면빈배열"],
+  "summary_kr": "핵심만 1~2줄로 요약",
+  "importance": 1~5,
+  "tickers": ["관련 티커", "없으면 빈 배열"],
   "category": "올바른카테고리명"
 }`
-    : `Analyze the following news:
-Original Category: ${article.category}
+    : `Analyze this news briefly.
+Category: ${article.category}
 Title: ${safeTitle}
 Content: ${safeDescription}
 
-[1] Category Rules
-- 경제: Stocks, exchange rates, interest rates, real estate, corporate earnings, KOSPI, USD/KRW, banks, financial policies.
-- 사회: Incidents, accidents, disasters, crimes, court rulings, fires, traffic accidents, health issues.
-- 정치: Congress, president, legislation, elections, political parties, government policies, domestic politics.
-- 세계: International affairs, overseas economy, wars, conflicts, major events in US/China/Japan/Europe.
-- 생활/문화: Movies, dramas, music, exhibitions, performances, fashion, food, travel, leisure, entertainment, pop culture.
-- IT/과학: AI, semiconductors, Samsung, Apple, Google, Tesla, space, scientific innovations.
-
-[2] Importance Scoring Criteria
-- 5: Global macro shifts, national disasters, interest rate decisions, major big tech announcements.
-- 4: Major corporate earnings/M&A, key legislation, market-leading issues.
-- 3: General economic indicators, sector trends, broadly notable news.
-- 2: Small business news, low-impact daily news.
-- 1: PR/ads, personal gossip, minor local incidents.
-
-Respond ONLY with valid JSON:
+Return JSON only:
 {
   "korean_title": "Translated Korean Title",
-  "summary_kr": "Core summary in Korean, 2-3 lines",
+  "summary_kr": "Core summary in 1-2 lines",
   "importance": NUMBER,
   "tickers": ["US_STOCK_TICKER", "OR_EMPTY_ARRAY"],
   "category": "CORRECT_KOREAN_CATEGORY_NAME"
@@ -689,15 +914,15 @@ Respond ONLY with valid JSON:
       messages: [
         {
           role: 'system',
-          content: 'You are a professional Korean news analyst. Output only valid JSON. Do not include markdown.',
+          content: 'You are a concise news analyst. Output only valid JSON.',
         },
         {
           role: 'user',
           content: prompt,
         },
       ],
-      max_tokens: 800,
-      temperature: 0.2,
+      max_tokens: 256,
+      temperature: 0.1,
       response_format: { type: 'json_object' },
     }),
     signal: AbortSignal.timeout(30000),
@@ -828,6 +1053,546 @@ async function cleanupOldTrends(env, days) {
   } catch (error) {
     console.error('Cleanup Error:', error.message);
   }
+}
+
+async function refreshIssueTimeline(env) {
+  const trends = await getRecentTrends(env, 48, '', 1000);
+
+  if (!trends || trends.length === 0) {
+    return {
+      success: true,
+      clusters: 0,
+      mappings: 0,
+      periods: [],
+    };
+  }
+
+  const keywordStats = buildIssueTitleKeywordStats(trends);
+  const keywordStatMap = new Map(keywordStats.map(item => [item.keyword, item]));
+  const pairStats = buildIssueTitlePairStats(trends);
+  const pairStatMap = new Map(pairStats.map(item => [item.key, item]));
+  const clusterRows = [];
+  const mappingRows = [];
+  const nowIso = new Date().toISOString();
+
+  for (const windowDef of ISSUE_TIMELINE_WINDOWS) {
+    const currentCutoff = Date.now() - windowDef.hours * 60 * 60 * 1000;
+    const previousCutoff = Date.now() - windowDef.hours * 2 * 60 * 60 * 1000;
+
+    const currentTrends = trends.filter(trend => trendTimestamp(trend) >= currentCutoff);
+    const previousTrends = trends.filter(trend => {
+      const ts = trendTimestamp(trend);
+      return ts >= previousCutoff && ts < currentCutoff;
+    });
+
+    if (currentTrends.length === 0) {
+      continue;
+    }
+
+    const currentLabelMap = buildIssueLabelMap(currentTrends, keywordStatMap, pairStatMap);
+    const previousLabelMap = buildIssueLabelMap(previousTrends, keywordStatMap, pairStatMap);
+    const clusterMap = new Map();
+
+    const sortedCurrentTrends = currentTrends
+      .slice()
+      .sort((a, b) => {
+        const importanceDiff = (b.importance || 0) - (a.importance || 0);
+        if (importanceDiff !== 0) return importanceDiff;
+        return trendTimestamp(b) - trendTimestamp(a);
+      });
+
+    for (const trend of sortedCurrentTrends) {
+      const labelInfo = getTrendIssueLabel(trend, keywordStatMap, pairStatMap);
+
+      if (!labelInfo) continue;
+
+      const bucket = currentLabelMap.get(labelInfo.label);
+      if (!bucket) continue;
+
+      if (!clusterMap.has(bucket.label)) {
+        clusterMap.set(bucket.label, {
+          id: crypto.randomUUID(),
+          period: windowDef.period,
+          canonical_keyword: bucket.displayKeyword,
+          categoryCounts: new Map(),
+          articles: [],
+          sources: new Set(),
+          firstSeen: trendTimestamp(trend),
+          lastSeen: trendTimestamp(trend),
+          totalImportance: 0,
+        });
+      }
+
+      const cluster = clusterMap.get(bucket.label);
+      cluster.articles.push(trend);
+      cluster.sources.add(trend.source || 'unknown');
+      cluster.firstSeen = Math.min(cluster.firstSeen, trendTimestamp(trend));
+      cluster.lastSeen = Math.max(cluster.lastSeen, trendTimestamp(trend));
+      cluster.totalImportance += Number(trend.importance || 0);
+      cluster.categoryCounts.set(trend.category || '기타', (cluster.categoryCounts.get(trend.category || '기타') || 0) + 1);
+    }
+
+    for (const cluster of clusterMap.values()) {
+      const currentCount = cluster.articles.length;
+      const sourceCount = cluster.sources.size;
+      const avgImportance = currentCount > 0 ? cluster.totalImportance / currentCount : 0;
+      const sentiment = summarizeSentiment(cluster.articles);
+      const previousCount = previousLabelMap.get(cluster.canonical_keyword)?.count || 0;
+      const growthRate = previousCount <= 0
+        ? (currentCount >= 3 ? 999 : 0)
+        : Math.round(((currentCount - previousCount) / previousCount) * 100);
+      const score = calculateIssueClusterScore({
+        currentCount,
+        sourceCount,
+        avgImportance,
+        growthRate,
+        sentimentTemperature: sentiment.temperature,
+      });
+      const stage = classifyIssueStage(currentCount, previousCount, growthRate, cluster.lastSeen, windowDef.hours);
+      const dominantCategory = Array.from(cluster.categoryCounts.entries())
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || '기타';
+      const representative = cluster.articles
+        .slice()
+        .sort((a, b) => (b.importance || 0) - (a.importance || 0) || trendTimestamp(b) - trendTimestamp(a))[0];
+
+      if (!shouldKeepIssueCluster({
+        currentCount,
+        sourceCount,
+        score,
+        growthRate,
+      })) {
+        continue;
+      }
+
+      clusterRows.push({
+        id: cluster.id,
+        period: windowDef.period,
+        category: dominantCategory,
+        canonical_keyword: cluster.canonical_keyword,
+        representative_title: representative?.korean_title || representative?.original_title || cluster.canonical_keyword,
+        summary: buildIssueClusterSummary(cluster.articles, windowDef.period),
+        article_count: currentCount,
+        source_count: sourceCount,
+        growth_rate: growthRate,
+        score,
+        sentiment_temperature: sentiment.temperature,
+        stage,
+        first_seen_at: new Date(cluster.firstSeen).toISOString(),
+        last_seen_at: new Date(cluster.lastSeen).toISOString(),
+        created_at: nowIso,
+        updated_at: nowIso,
+      });
+
+      for (const article of cluster.articles) {
+        mappingRows.push({
+          issue_cluster_id: cluster.id,
+          news_id: article.id,
+          similarity_score: calculateIssueSimilarityScore(article, cluster.canonical_keyword, keywordStatMap, pairStatMap),
+          created_at: nowIso,
+        });
+      }
+    }
+  }
+
+  if (clusterRows.length === 0) {
+    return {
+      success: true,
+      clusters: 0,
+      mappings: 0,
+      periods: ISSUE_TIMELINE_WINDOWS.map(item => item.period),
+    };
+  }
+
+  await querySupabase(env, 'issue_cluster_articles?created_at=not.is.null', 'DELETE');
+  await querySupabase(env, 'issue_clusters?created_at=not.is.null', 'DELETE');
+
+  const clusterInsert = await querySupabase(env, 'issue_clusters', 'POST', clusterRows);
+  if (clusterInsert.error) {
+    throw new Error(clusterInsert.error.message || 'Failed to insert issue clusters');
+  }
+
+  const mappingInsert = await querySupabase(env, 'issue_cluster_articles', 'POST', mappingRows);
+  if (mappingInsert.error) {
+    throw new Error(mappingInsert.error.message || 'Failed to insert issue cluster mappings');
+  }
+
+  return {
+    success: true,
+    clusters: clusterRows.length,
+    mappings: mappingRows.length,
+    periods: ISSUE_TIMELINE_WINDOWS.map(item => item.period),
+  };
+}
+
+function prioritizeArticlesForAnalysis(articles, currentCategory) {
+  const categoryTerms = (CATEGORY_SEARCH_TERMS[currentCategory] || [])
+    .map(term => String(term || '').toLowerCase())
+    .filter(Boolean);
+
+  return articles
+    .slice()
+    .sort((a, b) => scoreArticleForAnalysis(b, categoryTerms) - scoreArticleForAnalysis(a, categoryTerms));
+}
+
+function scoreArticleForAnalysis(article, categoryTerms) {
+  const title = String(article?.title || '').toLowerCase();
+  const description = String(article?.description || '').toLowerCase();
+  const combined = `${title} ${description}`;
+  let score = 0;
+
+  if (categoryTerms.some(term => combined.includes(term))) {
+    score += 10;
+  }
+
+  if (/(실적|금리|환율|관세|전쟁|폭염|지진|합병|인수|ai|반도체|비트코인|코스피|코스닥|대통령|국회|선거)/i.test(combined)) {
+    score += 6;
+  }
+
+  if (/\b(삼성|애플|구글|테슬라|엔비디아|메타|마이크로소프트)\b/i.test(article?.title || '')) {
+    score += 4;
+  }
+
+  const titleLength = (article?.title || '').length;
+  if (titleLength >= 12 && titleLength <= 60) {
+    score += 2;
+  }
+
+  if ((article?.description || '').length >= 80) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function buildIssueLabelMap(trends, keywordStatMap, pairStatMap) {
+  const map = new Map();
+
+  for (const trend of trends || []) {
+    const labelInfo = getTrendIssueLabel(trend, keywordStatMap, pairStatMap);
+
+    if (!labelInfo) continue;
+
+    if (!map.has(labelInfo.label)) {
+      map.set(labelInfo.label, {
+        label: labelInfo.label,
+        displayKeyword: labelInfo.displayKeyword,
+        count: 0,
+      });
+    }
+
+    const item = map.get(labelInfo.label);
+    item.count += 1;
+  }
+
+  return map;
+}
+
+function getTrendIssueLabel(trend, keywordStatMap, pairStatMap) {
+  const keywords = Array.from(new Set(extractIssueTitleKeywords(trend)))
+    .filter(isUsefulKeyword)
+    .slice(0, 6);
+
+  if (keywords.length === 0) {
+    return null;
+  }
+
+  const pairCandidates = [];
+
+  for (let i = 0; i < keywords.length; i++) {
+    for (let j = i + 1; j < keywords.length; j++) {
+      const pairKey = makePairKey(keywords[i], keywords[j]);
+      const pairStat = pairStatMap.get(pairKey);
+
+      if (!pairStat) continue;
+      if (pairStat.count < 2) continue;
+
+      pairCandidates.push({
+        label: pairKey,
+        displayKeyword: pairKey,
+        score: pairStat.score,
+        count: pairStat.count,
+      });
+    }
+  }
+
+  if (pairCandidates.length > 0) {
+    pairCandidates.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label, 'ko');
+    });
+
+    return pairCandidates[0];
+  }
+
+  const keywordCandidates = keywords
+    .map(keyword => {
+      const stat = keywordStatMap.get(keyword);
+      return {
+        label: keyword,
+        displayKeyword: keyword,
+        score: stat?.score || 0,
+        count: stat?.newsCount || 0,
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label, 'ko');
+    });
+
+  return keywordCandidates[0] || null;
+}
+
+function buildIssueClusterSummary(articles, period) {
+  const topArticles = articles
+    .slice()
+    .sort((a, b) => (b.importance || 0) - (a.importance || 0) || trendTimestamp(b) - trendTimestamp(a))
+    .slice(0, 2)
+    .map(article => article.summary_kr || article.korean_title || article.original_title || '')
+    .filter(Boolean);
+
+  if (topArticles.length === 0) {
+    return `${period} 기준 주요 기사`;
+  }
+
+  return truncateText(topArticles.join(' / '), 160);
+}
+
+function calculateIssueSimilarityScore(article, canonicalKeyword, keywordStatMap, pairStatMap) {
+  const keywords = Array.from(new Set(extractIssueTitleKeywords(article)))
+    .filter(isUsefulKeyword);
+
+  if (keywords.includes(canonicalKeyword)) {
+    return 1;
+  }
+
+  if (canonicalKeyword.includes('·')) {
+    const [left, right] = canonicalKeyword.split('·').map(part => part.trim());
+    if (keywords.includes(left) && keywords.includes(right)) {
+      return 0.95;
+    }
+  }
+
+  const keywordScore = keywords.reduce((acc, keyword) => {
+    const stat = keywordStatMap.get(keyword);
+    return Math.max(acc, stat?.score || 0);
+  }, 0);
+
+  let pairScore = 0;
+  for (let i = 0; i < keywords.length; i++) {
+    for (let j = i + 1; j < keywords.length; j++) {
+      const stat = pairStatMap.get(makePairKey(keywords[i], keywords[j]));
+      if (stat) {
+        pairScore = Math.max(pairScore, stat.score);
+      }
+    }
+  }
+
+  const combined = Math.max(keywordScore, pairScore);
+  if (combined >= 20) return 0.8;
+  if (combined >= 10) return 0.6;
+  return 0.5;
+}
+
+function calculateIssueClusterScore({ currentCount, sourceCount, avgImportance, growthRate, sentimentTemperature }) {
+  const articleScore = clampNumber(Math.round(currentCount * 18), 0, 45);
+  const sourceScore = clampNumber(Math.round(sourceCount * 8), 0, 20);
+  const importanceScore = clampNumber(Math.round(avgImportance * 12), 0, 25);
+  const growthScore = growthRate >= 999
+    ? 15
+    : clampNumber(Math.round(Math.max(growthRate, 0) / 6), 0, 15);
+  const sentimentScore = sentimentTemperature >= 70 || sentimentTemperature <= 30 ? 5 : 0;
+
+  return clampNumber(Math.round(articleScore + sourceScore + importanceScore + growthScore + sentimentScore), 0, 100);
+}
+
+function classifyIssueStage(currentCount, previousCount, growthRate, lastSeenAt, windowHours) {
+  const hoursSinceLastSeen = Math.max(0, (Date.now() - new Date(lastSeenAt).getTime()) / (60 * 60 * 1000));
+
+  if (currentCount <= 0) return 'ended';
+  if (previousCount === 0 && currentCount >= 3) return 'new';
+  if (growthRate >= 40 && currentCount >= 3) return 'rising';
+  if (growthRate <= -35 || hoursSinceLastSeen > windowHours) return 'cooling';
+  if (currentCount >= 5 && hoursSinceLastSeen <= Math.max(1, windowHours / 3)) return 'peak';
+  return 'rising';
+}
+
+function shouldKeepIssueCluster({ currentCount, sourceCount, score, growthRate }) {
+  if (currentCount >= 4 && sourceCount >= 2) return true;
+  if (currentCount >= 3 && score >= 62) return true;
+  if (currentCount >= 2 && score >= 80 && Math.max(growthRate, 0) >= 50) return true;
+  return false;
+}
+
+async function buildLiveTrendTimelineFromTrends(env, period, category, limit, minScore) {
+  const trends = await getRecentTrends(env, periodToHours(period) * 2, category, 1000);
+  if (!trends || trends.length === 0) return [];
+
+  const keywordStats = buildIssueTitleKeywordStats(trends);
+  const keywordStatMap = new Map(keywordStats.map(item => [item.keyword, item]));
+  const pairStats = buildIssueTitlePairStats(trends);
+  const pairStatMap = new Map(pairStats.map(item => [item.key, item]));
+  const clusters = buildIssueClustersFromTrends(trends, period, keywordStatMap, pairStatMap);
+
+  return clusters
+    .filter(item => item.score >= minScore)
+    .sort((a, b) => b.score - a.score || b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, limit)
+    .map((item, index) => ({
+      ...item,
+      rank: index + 1,
+      newsIds: Array.from(new Set((item.newsIds || []).map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0))),
+    }));
+}
+
+function buildIssueClustersFromTrends(trends, period, keywordStatMap, pairStatMap) {
+  const now = Date.now();
+  const currentCutoff = now - periodToHours(period) * 60 * 60 * 1000;
+  const previousCutoff = now - periodToHours(period) * 2 * 60 * 60 * 1000;
+  const currentTrends = trends.filter(trend => trendTimestamp(trend) >= currentCutoff);
+  const previousTrends = trends.filter(trend => {
+    const ts = trendTimestamp(trend);
+    return ts >= previousCutoff && ts < currentCutoff;
+  });
+
+  const currentLabelMap = buildIssueLabelMap(currentTrends, keywordStatMap, pairStatMap);
+  const previousLabelMap = buildIssueLabelMap(previousTrends, keywordStatMap, pairStatMap);
+  const clusterMap = new Map();
+
+  const sortedCurrentTrends = currentTrends
+    .slice()
+    .sort((a, b) => {
+      const importanceDiff = (b.importance || 0) - (a.importance || 0);
+      if (importanceDiff !== 0) return importanceDiff;
+      return trendTimestamp(b) - trendTimestamp(a);
+    });
+
+  for (const trend of sortedCurrentTrends) {
+    const labelInfo = getTrendIssueLabel(trend, keywordStatMap, pairStatMap);
+    if (!labelInfo) continue;
+
+    const bucket = currentLabelMap.get(labelInfo.label);
+    if (!bucket) continue;
+
+    if (!clusterMap.has(bucket.label)) {
+      clusterMap.set(bucket.label, {
+        id: bucket.label,
+        period,
+        canonical_keyword: bucket.displayKeyword,
+        categoryCounts: new Map(),
+        articles: [],
+        sources: new Set(),
+        firstSeen: trendTimestamp(trend),
+        lastSeen: trendTimestamp(trend),
+        totalImportance: 0,
+      });
+    }
+
+    const cluster = clusterMap.get(bucket.label);
+    cluster.articles.push(trend);
+    cluster.sources.add(trend.source || 'unknown');
+    cluster.firstSeen = Math.min(cluster.firstSeen, trendTimestamp(trend));
+    cluster.lastSeen = Math.max(cluster.lastSeen, trendTimestamp(trend));
+    cluster.totalImportance += Number(trend.importance || 0);
+    cluster.categoryCounts.set(trend.category || '기타', (cluster.categoryCounts.get(trend.category || '기타') || 0) + 1);
+  }
+
+  return Array.from(clusterMap.values())
+    .map(cluster => {
+      const currentCount = cluster.articles.length;
+      const sourceCount = cluster.sources.size;
+      const avgImportance = currentCount > 0 ? cluster.totalImportance / currentCount : 0;
+      const sentiment = summarizeSentiment(cluster.articles);
+      const previousCount = previousLabelMap.get(cluster.canonical_keyword)?.count || 0;
+      const growthRate = previousCount <= 0
+        ? (currentCount >= 3 ? 999 : 0)
+        : Math.round(((currentCount - previousCount) / previousCount) * 100);
+      const score = calculateIssueClusterScore({
+        currentCount,
+        sourceCount,
+        avgImportance,
+        growthRate,
+        sentimentTemperature: sentiment.temperature,
+      });
+      const stage = classifyIssueStage(currentCount, previousCount, growthRate, cluster.lastSeen, periodToHours(period));
+      const dominantCategory = Array.from(cluster.categoryCounts.entries())
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || '기타';
+      const representative = cluster.articles
+        .slice()
+        .sort((a, b) => (b.importance || 0) - (a.importance || 0) || trendTimestamp(b) - trendTimestamp(a))[0];
+
+      return {
+        id: cluster.id,
+        period,
+        category: dominantCategory,
+        keyword: cluster.canonical_keyword,
+        title: representative?.korean_title || representative?.original_title || cluster.canonical_keyword,
+        summary: buildIssueClusterSummary(cluster.articles, period),
+        articleCount: currentCount,
+        sourceCount,
+        newsIds: cluster.articles.map(article => article.id).filter(value => value !== null && value !== undefined),
+        growthRate,
+        score,
+        sentimentTemperature: sentiment.temperature,
+        stage,
+        firstSeenAt: new Date(cluster.firstSeen).toISOString(),
+        lastSeenAt: new Date(cluster.lastSeen).toISOString(),
+      };
+    })
+    .filter(item => shouldKeepIssueCluster({
+      currentCount: item.articleCount,
+      sourceCount: item.sourceCount,
+      score: item.score,
+      growthRate: item.growthRate,
+    }));
+}
+
+function buildKeywordPairStats(trends) {
+  const bucket = new Map();
+
+  for (const trend of trends || []) {
+    const keywords = Array.from(new Set(extractKeywordsFromTrend(trend)))
+      .filter(isUsefulKeyword)
+      .slice(0, 8);
+
+    for (let i = 0; i < keywords.length; i++) {
+      for (let j = i + 1; j < keywords.length; j++) {
+        const key = makePairKey(keywords[i], keywords[j]);
+        if (!bucket.has(key)) {
+          bucket.set(key, {
+            key,
+            count: 0,
+            score: 0,
+          });
+        }
+
+        const item = bucket.get(key);
+        item.count += 1;
+        item.score += (trend.importance || 3) + Math.log((trend.view_count || 0) + 1);
+      }
+    }
+  }
+
+  return Array.from(bucket.values())
+    .sort((a, b) => b.count - a.count || b.score - a.score || a.key.localeCompare(b.key, 'ko'));
+}
+
+function makePairKey(left, right) {
+  return [left, right]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'ko'))
+    .join('·');
+}
+
+function truncateText(text, maxLength) {
+  const value = String(text || '').trim();
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 async function getRecentTrendLinks(env, hours = 24) {
@@ -1072,13 +1837,15 @@ async function handleGetMarketData(url, corsHeaders) {
 
 async function handleGetChartData(url, corsHeaders) {
   const symbol = url.searchParams.get('symbol');
+  const interval = normalizeChartInterval(url.searchParams.get('interval') || '1d');
+  const range = normalizeChartRange(url.searchParams.get('range') || defaultChartRangeForInterval(interval));
 
   if (!symbol) {
     return jsonResponse({ success: false, error: 'Missing symbol parameter' }, corsHeaders, 400);
   }
 
   try {
-    const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
+    const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`;
 
     const response = await fetch(yfUrl, {
       headers: {
@@ -1122,6 +1889,8 @@ async function handleGetChartData(url, corsHeaders) {
     return jsonResponse({
       success: true,
       symbol,
+      interval,
+      range,
       data: candleData,
     }, corsHeaders);
   } catch (error) {
@@ -1359,6 +2128,8 @@ const KEYWORD_STOPWORDS = new Set([
   '밝혔다', '전했다', '말했다', '설명했다', '강조했다', '알려졌다', '보인다',
   '그리고', '하지만', '또한', '관련해', '관해서', '때문에', '위해서', '하면서',
   'the', 'and', 'for', 'with', 'from', 'this', 'that', 'news', 'today',
+  '정치', '경제', '사회', '세계', '생활', '문화', '연예', '스포츠', '과학', 'it',
+  '증시', '주가', '국제', '국내증시', '글로벌', '산업',
 ]);
 
 const POSITIVE_WORDS = [
@@ -1430,6 +2201,97 @@ function buildKeywordStats(trends) {
     })
     .filter(item => item.newsCount >= 1)
     .sort((a, b) => b.newsCount - a.newsCount || b.score - a.score || a.keyword.localeCompare(b.keyword, 'ko'));
+}
+
+function buildIssueTitleKeywordStats(trends) {
+  const bucket = new Map();
+
+  for (const trend of trends || []) {
+    const keywords = new Set(extractIssueTitleKeywords(trend));
+
+    for (const keyword of keywords) {
+      if (!bucket.has(keyword)) {
+        bucket.set(keyword, {
+          keyword,
+          categoryCounts: new Map(),
+          news: [],
+          score: 0,
+        });
+      }
+
+      const item = bucket.get(keyword);
+      item.news.push(trend);
+      item.score += (trend.importance || 3) + Math.log((trend.view_count || 0) + 1);
+      const category = trend.category || '기타';
+      item.categoryCounts.set(category, (item.categoryCounts.get(category) || 0) + 1);
+    }
+  }
+
+  return Array.from(bucket.values())
+    .map(item => {
+      const topCategory = Array.from(item.categoryCounts.entries())
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || '기타';
+      const representative = item.news
+        .slice()
+        .sort((a, b) => (b.importance || 0) - (a.importance || 0) || trendTimestamp(b) - trendTimestamp(a))[0];
+
+      return {
+        keyword: item.keyword,
+        category: topCategory,
+        newsCount: item.news.length,
+        news: item.news,
+        score: Math.round(item.score * 10) / 10,
+        representativeTitle: representative?.korean_title || representative?.original_title || '',
+      };
+    })
+    .filter(item => item.newsCount >= 1)
+    .sort((a, b) => b.newsCount - a.newsCount || b.score - a.score || a.keyword.localeCompare(b.keyword, 'ko'));
+}
+
+function buildIssueTitlePairStats(trends) {
+  const bucket = new Map();
+
+  for (const trend of trends || []) {
+    const keywords = Array.from(new Set(extractIssueTitleKeywords(trend)))
+      .filter(isUsefulKeyword)
+      .slice(0, 6);
+
+    for (let i = 0; i < keywords.length; i++) {
+      for (let j = i + 1; j < keywords.length; j++) {
+        const key = makePairKey(keywords[i], keywords[j]);
+        if (!bucket.has(key)) {
+          bucket.set(key, {
+            key,
+            count: 0,
+            score: 0,
+          });
+        }
+
+        const item = bucket.get(key);
+        item.count += 1;
+        item.score += (trend.importance || 3) + Math.log((trend.view_count || 0) + 1);
+      }
+    }
+  }
+
+  return Array.from(bucket.values())
+    .sort((a, b) => b.count - a.count || b.score - a.score || a.key.localeCompare(b.key, 'ko'));
+}
+
+function extractIssueTitleKeywords(trend) {
+  const text = [
+    trend.korean_title,
+    trend.original_title,
+  ].filter(Boolean).join(' ');
+  const normalizedText = decodeHTMLEntities(stripHTML(text))
+    .replace(/[()[\]{}"'“”‘’.,!?;:<>|/\\+=*&^%$#@~`·…]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const matches = normalizedText.match(/[가-힣A-Za-z0-9][가-힣A-Za-z0-9+.-]{1,}/g) || [];
+
+  return matches
+    .map(normalizeKeyword)
+    .filter(isUsefulKeyword);
 }
 
 function extractKeywordsFromTrend(trend) {
@@ -1693,6 +2555,31 @@ function normalizePeriod(period) {
   return ['1h', '6h', '24h', '7d'].includes(value) ? value : '24h';
 }
 
+function normalizeSort(sort) {
+  const value = String(sort || '').toLowerCase();
+  return ['latest', 'featured', 'popular', 'relevance'].includes(value) ? value : 'latest';
+}
+
+function buildTrendOrder(sort) {
+  switch (sort) {
+    case 'featured':
+      return 'importance.desc,published.desc,created_at.desc';
+    case 'popular':
+      return 'view_count.desc,importance.desc,published.desc,created_at.desc';
+    case 'relevance':
+    case 'latest':
+    default:
+      return 'published.desc,created_at.desc,importance.desc';
+  }
+}
+
+function buildPeriodFilter(period) {
+  if (!period) return '';
+  const hours = periodToHours(period);
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  return `&created_at=gte.${encodeURIComponent(cutoff)}`;
+}
+
 function periodToHours(period) {
   switch (period) {
     case '1h':
@@ -1704,5 +2591,27 @@ function periodToHours(period) {
     case '24h':
     default:
       return 24;
+  }
+}
+
+function normalizeChartInterval(interval) {
+  const value = String(interval || '').toLowerCase();
+  return ['1d', '1wk', '1mo'].includes(value) ? value : '1d';
+}
+
+function normalizeChartRange(range) {
+  const value = String(range || '').toLowerCase();
+  return ['6mo', '1y', '2y', '5y', '10y'].includes(value) ? value : '6mo';
+}
+
+function defaultChartRangeForInterval(interval) {
+  switch (normalizeChartInterval(interval)) {
+    case '1wk':
+      return '5y';
+    case '1mo':
+      return '10y';
+    case '1d':
+    default:
+      return '6mo';
   }
 }

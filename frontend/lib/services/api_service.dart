@@ -10,10 +10,12 @@ class ApiService {
 
   /// 최신 트렌드 목록 가져오기
   Future<List<TrendItem>> fetchTrends(
-      {int limit = 20, int offset = 0, String category = ''}) async {
+      {int limit = 20, int offset = 0, String category = '', String sort = 'latest', String period = ''}) async {
     try {
       print('🌐 Fetching from: $baseUrl/api/trends');
       final uri = Uri.parse('$baseUrl/api/trends?limit=$limit&offset=$offset'
+          '&sort=${Uri.encodeComponent(sort)}'
+          '${period.isNotEmpty ? '&period=${Uri.encodeComponent(period)}' : ''}'
           '${category.isNotEmpty ? '&category=${Uri.encodeComponent(category)}' : ''}');
       print('🔗 Full URI: $uri');
       final response = await http.get(
@@ -77,6 +79,47 @@ class ApiService {
       risingIssues: results[1] as List<RisingIssue>,
       sentiment: results[2] as NewsSentimentSummary,
     );
+  }
+
+  Future<List<IssueTimelineItem>> fetchTrendTimeline({
+    String period = '24h',
+    String category = '',
+    int limit = 10,
+    int minScore = 0,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/trend/timeline').replace(
+      queryParameters: {
+        'period': period,
+        'limit': '$limit',
+        'min_score': '$minScore',
+        if (category.isNotEmpty) 'category': category,
+      },
+    );
+    final jsonData = await _getJson(uri);
+    final items = jsonData['items'] as List<dynamic>? ?? const [];
+
+    return items
+        .map((item) => IssueTimelineItem.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<TrendItem>> fetchIssueTimelineNews({
+    required String issueId,
+    String? keyword,
+    List<int> newsIds = const [],
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/trend/timeline/${Uri.encodeComponent(issueId)}/news').replace(
+      queryParameters: {
+        if (keyword != null && keyword.trim().isNotEmpty) 'keyword': keyword.trim(),
+        if (newsIds.isNotEmpty) 'news_ids': newsIds.join(','),
+      },
+    );
+    final jsonData = await _getJson(uri);
+    final items = jsonData['items'] as List<dynamic>? ?? const [];
+
+    return items
+        .map((item) => TrendItem.fromJson(_newsItemToTrendJson(item)))
+        .toList();
   }
 
   Future<List<TrendKeyword>> fetchTrendKeywords({
@@ -252,6 +295,7 @@ class ApiService {
     return {
       'id': json['id'],
       'korean_title': json['title'],
+      'original_title': json['original_title'] ?? json['title'],
       'summary_kr': json['summary'],
       'importance': json['importance'],
       'tickers': const <String>[],

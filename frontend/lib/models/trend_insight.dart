@@ -138,6 +138,70 @@ class KeywordNewsResult {
   });
 }
 
+class IssueTimelineItem {
+  final String id;
+  final int rank;
+  final String period;
+  final String category;
+  final String keyword;
+  final String title;
+  final String summary;
+  final int articleCount;
+  final int sourceCount;
+  final List<int> newsIds;
+  final double growthRate;
+  final double score;
+  final int? sentimentTemperature;
+  final String stage;
+  final String firstSeenAt;
+  final String lastSeenAt;
+
+  const IssueTimelineItem({
+    required this.id,
+    required this.rank,
+    required this.period,
+    required this.category,
+    required this.keyword,
+    required this.title,
+    required this.summary,
+    required this.articleCount,
+    required this.sourceCount,
+    required this.newsIds,
+    required this.growthRate,
+    required this.score,
+    required this.sentimentTemperature,
+    required this.stage,
+    required this.firstSeenAt,
+    required this.lastSeenAt,
+  });
+
+  factory IssueTimelineItem.fromJson(Map<String, dynamic> json) {
+    return IssueTimelineItem(
+      id: json['id'] as String? ?? '',
+      rank: _asInt(json['rank']),
+      period: json['period'] as String? ?? '24h',
+      category: json['category'] as String? ?? '',
+      keyword: json['keyword'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      summary: json['summary'] as String? ?? '',
+      articleCount: _asInt(json['articleCount']),
+      sourceCount: _asInt(json['sourceCount']),
+      newsIds: (json['newsIds'] as List<dynamic>? ?? const [])
+          .map((value) => _asInt(value))
+          .where((value) => value > 0)
+          .toList(),
+      growthRate: _asDouble(json['growthRate']),
+      score: _asDouble(json['score']),
+      sentimentTemperature: json['sentimentTemperature'] == null
+          ? null
+          : _asInt(json['sentimentTemperature']),
+      stage: json['stage'] as String? ?? 'rising',
+      firstSeenAt: json['firstSeenAt'] as String? ?? '',
+      lastSeenAt: json['lastSeenAt'] as String? ?? '',
+    );
+  }
+}
+
 int _asInt(dynamic value) {
   if (value is int) return value;
   if (value is num) return value.round();
