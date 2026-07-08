@@ -3447,40 +3447,6 @@ class _DetailSheet extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (trend.tickers.isNotEmpty) ...[
-                    const SizedBox(height: 20),
-                    const Text(
-                      'Related Tickers',
-                      style:
-                          TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        for (final t in trend.tickers)
-                          Chip(
-                            label: Text(t),
-                            backgroundColor: const Color(0xFFE3F2FD),
-                            shape: StadiumBorder(
-                              side: BorderSide(
-                                color:
-                                    const Color(0xFF90CAF9).withOpacity(0.35),
-                              ),
-                            ),
-                            labelStyle: const TextStyle(
-                              color: Color(0xFF1565C0),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                            padding: const EdgeInsets.symmetric(horizontal: 2),
-                            materialTapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                          ),
-                      ],
-                    ),
-                  ],
                   const SizedBox(height: 24),
                   if (trend.link.isNotEmpty)
                     SizedBox(

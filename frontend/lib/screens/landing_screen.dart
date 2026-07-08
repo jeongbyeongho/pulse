@@ -452,65 +452,38 @@ class _LandingScreenState extends State<LandingScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            width: 4,
-                            height: isMobile ? 44 : 48,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF2563EB),
-                              borderRadius: BorderRadius.circular(99),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
                                   children: [
                                     Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 9,
-                                        vertical: 5,
-                                      ),
+                                      padding: const EdgeInsets.all(7),
                                       decoration: BoxDecoration(
                                         color: const Color(0xFFEEF4FF),
-                                        borderRadius:
-                                            BorderRadius.circular(999),
+                                        borderRadius: BorderRadius.circular(10),
                                       ),
-                                      child: const Text(
-                                        '오늘의 주요 이슈',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w800,
-                                          color: Color(0xFF2563EB),
-                                        ),
+                                      child: Icon(
+                                        Icons.auto_awesome_rounded,
+                                        size: 17,
+                                        color: Colors.blue.shade700,
                                       ),
                                     ),
                                     const SizedBox(width: 10),
-                                    Expanded(
+                                    const Expanded(
                                       child: Text(
-                                        '지금 가장 뜨거운 흐름을 빠르게 확인하세요',
+                                        'AI 브리핑',
                                         style: TextStyle(
-                                          fontSize: isMobile ? 20 : 22,
-                                          fontWeight: FontWeight.w600,
-                                          color: const Color(0xFF0F172A),
-                                          height: 1.18,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF0F172A),
                                         ),
                                       ),
                                     ),
                                   ],
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  '오늘의 핵심 이슈, 키워드, 최신 뉴스를 한 화면에서 이어서 봅니다.',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blueGrey.shade700,
-                                    height: 1.4,
-                                    fontWeight: FontWeight.w500,
-                                  ),
                                 ),
                               ],
                             ),
@@ -1905,28 +1878,8 @@ class _LandingTrendPanel extends StatelessWidget {
         builder: (context, constraints) {
           final isCompact = constraints.maxWidth < 900;
 
-          Widget panel(Widget child, {bool expand = false, double padding = 24}) {
-            return Container(
-              width: double.infinity,
-              height: expand ? double.infinity : null,
-              padding: EdgeInsets.all(padding),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFFE8EEF5)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color.fromRGBO(15, 23, 42, 0.05),
-                    blurRadius: 24,
-                    offset: Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: child,
-            );
-          }
-
           Widget sectionTitle(String title, String subtitle, {bool compact = false}) {
+            final hasSubtitle = subtitle.trim().isNotEmpty;
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1934,21 +1887,23 @@ class _LandingTrendPanel extends StatelessWidget {
                   title,
                   style: TextStyle(
                     color: const Color(0xFF0F172A),
-                    fontSize: compact ? 15 : 15,
-                    fontWeight: FontWeight.w600,
+                    fontSize: compact ? 16 : 16,
+                    fontWeight: FontWeight.w700,
                     height: 1.1,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    color: Colors.blueGrey.shade500,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    height: 1.35,
+                if (hasSubtitle) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: Colors.blueGrey.shade500,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      height: 1.35,
+                    ),
                   ),
-                ),
+                ],
               ],
             );
           }
@@ -2049,24 +2004,11 @@ class _LandingTrendPanel extends StatelessWidget {
             );
           }
 
-          final leftPanel = panel(
-            Column(
+          if (isCompact) {
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                sectionTitle(
-                  '오늘의 주요 이슈',
-                  '지금 가장 뜨거운 흐름을 빠르게 확인하세요',
-                ),
-                const SizedBox(height: 18),
-                const Text(
-                  'AI 브리핑',
-                  style: TextStyle(
-                    color: Color(0xFF0F172A),
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 2),
                 for (final bullet in bullets)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -2094,55 +2036,75 @@ class _LandingTrendPanel extends StatelessWidget {
                       ],
                     ),
                   ),
-                const SizedBox(height: 16),
-                trendScoreBlock(),
-              ],
-            ),
-            expand: !isCompact,
-          );
-
-          final middlePanel = panel(
-            isCompact
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      keywordsBlock(),
-                      const SizedBox(height: 16),
-                      _buildSearchAndCta(searchController, onSearch),
-                    ],
-                  )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      keywordsBlock(),
-                      const Spacer(),
-                      _buildSearchAndCta(searchController, onSearch),
-                    ],
-                ),
-            expand: !isCompact,
-          );
-
-          if (isCompact) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                leftPanel,
                 const SizedBox(height: 14),
-                middlePanel,
+                trendScoreBlock(),
+                const SizedBox(height: 18),
+                keywordsBlock(),
+                const SizedBox(height: 16),
+                _buildSearchAndCta(searchController, onSearch),
               ],
             );
           }
 
-          return IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(flex: 50, child: leftPanel),
-                const SizedBox(width: 14),
-                Expanded(flex: 50, child: middlePanel),
-              ],
-            ),
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 2),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    flex: 55,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final bullet in bullets)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  '• ',
+                                  style: TextStyle(
+                                    color: Color(0xFF2563EB),
+                                    height: 1.4,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    bullet,
+                                    style: TextStyle(
+                                      color: Colors.blueGrey.shade800,
+                                      fontSize: 14,
+                                      height: 1.42,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 14),
+                        trendScoreBlock(),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 18),
+                  Expanded(
+                    flex: 45,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        keywordsBlock(),
+                        const SizedBox(height: 16),
+                        _buildSearchAndCta(searchController, onSearch),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           );
         },
       ),
