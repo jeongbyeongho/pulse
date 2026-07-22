@@ -278,8 +278,10 @@ class _LandingScreenState extends State<LandingScreen>
   Timer? _marketRefreshTimer;
   bool _marketFetching = false;
   bool _marketRefreshing = false;
+  bool _insightRefreshing = false;
   String? _marketError;
   DateTime? _marketLastUpdatedAt;
+  DateTime? _lastInsightRefreshAt;
 
   bool get isDark => Theme.of(context).brightness == Brightness.dark;
   Color get titleText => isDark ? Colors.white : const Color(0xFF0F172A);
@@ -910,14 +912,26 @@ class _LandingScreenState extends State<LandingScreen>
 
   Future<void> _refreshInsights() async {
     if (!mounted) return;
-    setState(() {
-      _insightFuture = _api.fetchTrendInsights();
-      _timelineFuture =
-          _api.fetchTrendTimeline(period: '24h', limit: 3, minScore: 45);
-      _latestNewsFuture =
-          _api.fetchTrends(limit: 12, sort: 'latest', period: '24h');
-    });
-    await _refreshMarketData(force: true);
+    if (_insightRefreshing) return;
+    if (_lastInsightRefreshAt != null &&
+        DateTime.now().difference(_lastInsightRefreshAt!) <
+            const Duration(seconds: 8)) {
+      return;
+    }
+    _insightRefreshing = true;
+    try {
+      setState(() {
+        _insightFuture = _api.fetchTrendInsights();
+        _timelineFuture =
+            _api.fetchTrendTimeline(period: '24h', limit: 3, minScore: 45);
+        _latestNewsFuture =
+            _api.fetchTrends(limit: 12, sort: 'latest', period: '24h');
+      });
+      await _refreshMarketData(force: true);
+      _lastInsightRefreshAt = DateTime.now();
+    } finally {
+      _insightRefreshing = false;
+    }
   }
 
   bool _shouldRefreshMarketData() {
